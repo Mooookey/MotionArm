@@ -12,6 +12,7 @@ let meta = {}, end = null, frames = [], diagnostics = {}, seen = new Set(), high
 let parser = new FrameParser(handleFrame), cursor = 0, playing = false, playClock = 0, playTimestamp = 0;
 let pendingStart = false, metrics = null, lastMetricTime = 0, lastDrawTime = 0, demoTimer = null, demoSeq = 0;
 let lastValidDataAt = null, recordingStartedAt = null, receiveStale = false, stopping = false;
+let recordingKind = 'unknown';
 const RECEIVE_TIMEOUT_MS = 500;
 const events = [];
 
@@ -34,6 +35,7 @@ function getDiagnostics() {
 }
 function resetSession(newMeta = {}) {
   meta = { ...newMeta }; frames = []; end = null; diagnostics = {}; seen = new Set(); highestSeq = -1; previousTimestamp = null;
+  recordingKind = newMeta.recording_kind ?? 'unknown';
   cursor = 0; playing = false; metrics = null; lastMetricTime = 0;
   lastValidDataAt = null; recordingStartedAt = null; receiveStale = false; stopping = false;
   parser.diagnostics = { crc_errors: 0, invalid_frames: 0, json_errors: 0, discarded_bytes: 0 };
@@ -245,16 +247,17 @@ function refreshMetrics() {
     pair('错过周期 / 队列丢弃', `${sa.missed_deadlines ?? '—'} / ${sa.queue_drops ?? '—'}`),
     pair('积分间隙 / 接收时间间隙', `${sa.integration_gaps ?? '—'} / ${sa.host_gap_count ?? 0}`),
   );
-  $('staticBadge').textContent = m.static60.complete ? '完整' : '未完成 · 参考值';
-  $('staticBadge').className = `mini-chip ${m.static60.complete ? 'good' : 'warn'}`;
+  const dynamicRecording = ['dynamic', 'displacement'].includes(recordingKind);
+  $('staticBadge').textContent = dynamicRecording ? '动态数据 · 参考值' : m.static60.complete ? '数据完整 · 条件待确认' : '未完成 · 参考值';
+  $('staticBadge').className = 'mini-chip warn';
   $('staticRows').replaceChildren(...m.static60.axes.map(a => {
     const row = document.createElement('tr');
     for (const value of [a.name, number(a.raw_mean, 3), number(a.filtered_mean, 3), number(a.raw_std, 4), number(a.filtered_std, 4), number(a.filtered_error, 2), number(a.reduction_pct, 1) + (a.reduction_pct == null ? '' : '%')]) { const td = document.createElement('td'); td.textContent = value; row.append(td); }
     row.title = `单位 ${a.unit} · 原始均值 ${number(a.raw_mean, 5)} · 处理后均值 ${number(a.filtered_mean, 5)} · 误差 ${number(a.filtered_error, 3)} ${a.error_unit ?? ''}`;
     return row;
   }));
-  $('driftBadge').textContent = m.drift300.complete ? '完整' : '未完成 · 参考值';
-  $('driftBadge').className = `mini-chip ${m.drift300.complete ? 'good' : 'warn'}`;
+  $('driftBadge').textContent = dynamicRecording ? '动态数据 · 参考值' : m.drift300.complete ? '数据完整 · 条件待确认' : '未完成 · 参考值';
+  $('driftBadge').className = 'mini-chip warn';
   $('driftList').replaceChildren(
     pair('有效积分时长', `${number(m.drift300.duration_s, 2)} s / 300 s`),
     ...['X', 'Y', 'Z'].map((name, i) => pair(`${name} 原始 → 处理后`, `${number(m.drift300.raw_deg[i], 3)}° → ${number(m.drift300.filtered_deg[i], 3)}°`)),
@@ -383,7 +386,7 @@ function download(name, data, type) {
 function filename(extension) { return `imu_${source}_${meta.session_id ?? 'session'}_${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`; }
 function exportJson() {
   refreshMetrics();
-  const record = { format: 'imu-lab-recording-v1', source, captured_at: new Date().toISOString(), meta, end, diagnostics: getDiagnostics(), frames, metrics };
+  const record = { format: 'imu-lab-recording-v1', source, recording_kind: recordingKind, captured_at: new Date().toISOString(), meta, end, diagnostics: getDiagnostics(), frames, metrics };
   download(filename('json'), JSON.stringify(record), 'application/json'); log('已导出 JSON 记录和评测');
 }
 async function importRecording(file) {
@@ -392,6 +395,7 @@ async function importRecording(file) {
   try {
     const data = validateRecording(JSON.parse(await file.text()));
     resetSession(data.meta ?? { session_id: data.frames[0].session_id });
+    recordingKind = data.recording_kind ?? data.meta?.recording_kind ?? 'unknown';
     meta.session_id ??= data.frames[0].session_id;
     imported = true; source = data.source ?? 'unknown'; recording = false;
     // Keep the supplied diagnostics, and independently count anomalies still present in the imported frames.
@@ -423,6 +427,7 @@ function exportPng() {
 function startDemo() {
   resetSession({ session_id: 9001, state: 'recording', calibrated: true, sample_hz: 200, baud: BAUD_RATE, g: 9.80665, accel_lsb_per_g: 8192, gyro_lsb_per_dps: 65.5, accel_norm_scale: 1, firmware_version: 'BROWSER DEMO — NOT HARDWARE', coordinate_frame: 'right-handed body-to-world, world Z up' });
   source = 'demo'; recording = true; demoSeq = 0;
+  recordingKind = 'dynamic';
   $('metadataView').textContent = JSON.stringify(meta, null, 2);
   demoTimer = setInterval(() => {
     for (let i = 0; i < 10; i++) {

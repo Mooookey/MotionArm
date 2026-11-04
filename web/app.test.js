@@ -88,6 +88,15 @@ test('browser controller covers session boundaries, 500ms reception watchdog, ca
     assert.equal(element('frameCount').textContent, '1'); assert.equal(element('lossRate').textContent, '未知');
     assert.ok(element('sourceBanner').textContent.includes('离线回放')); assert.ok(element('qualityList').textContent.includes('2 / 0'));
     tick(10000); assert.ok(!element('connectionBadge').className.includes('stale')); assert.ok(!element('notice').textContent.includes('500 ms'));
+
+    // Passing the time/data gate cannot certify that the physical recording was static.
+    const completeCapture = { ...capture, diagnostics: {}, frames: Array.from({ length: 12000 }, (_, seq) => ({ ...capture.frames[0], seq, t_us: 5000 + seq * 5000 })), end: { ...summary, session_id: 99, generated: 12000, sent: 12000, dt_count: 11999 } };
+    await element('importFile').events.change({ target: { files: [{ name: 'unknown60.json', size: 1000, async text() { return JSON.stringify(completeCapture); } }] } });
+    assert.equal(element('staticBadge').textContent, '数据完整 · 条件待确认');
+    await element('importFile').events.change({ target: { files: [{ name: 'dynamic60.json', size: 1000, async text() { return JSON.stringify({ ...completeCapture, recording_kind: 'dynamic' }); } }] } });
+    assert.equal(element('staticBadge').textContent, '动态数据 · 参考值'); assert.equal(element('driftBadge').textContent, '动态数据 · 参考值');
+    await element('importFile').events.change({ target: { files: [{ name: 'displacement.json', size: 1000, async text() { return JSON.stringify({ ...capture, meta: { ...capture.meta, recording_kind: 'displacement' } }); } }] } });
+    assert.equal(element('staticBadge').textContent, '动态数据 · 参考值');
   } finally {
     if (opened) await element('disconnectBtn').events.click();
     for (const [name, descriptor] of original) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; }

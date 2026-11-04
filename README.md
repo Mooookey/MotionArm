@@ -15,6 +15,8 @@ Set-Location E:\Code\emb-exam
 
 - 详细操作：`docs/QUICKSTART.md`
 - 六项任务、公式、验收证据和边界：`docs/ACCEPTANCE.md`
+- 本次真实结论与数据链接：`docs/RESULTS.md`
+- 不记轴名的实体动作指引：`docs/AXIS_GUIDE.md`
 - 二进制协议：`PROTOCOL.md`
 - 固件与数学说明：`firmware/ImuExam/`
 - 无依赖网页：`web/`；`?demo=1` 为明确标记的模拟模式，不可用于验收。
@@ -30,3 +32,7 @@ node tools/build-report.mjs E:\Code\emb-exam\results\static\recording.json
 ```
 
 六轴 IMU 的 yaw 是相对方向，位移为有静止约束的短时积分估计。轴对齐与动态响应验收需要实际转动模块；视频需同时展示实体模块和网页。
+
+本次已保留305秒静态、完整旋转及位移尝试记录。`results/selections/manifest.json` 说明推荐展示片段的依据和原始序号/时间；切片不改样本，完整会话负责丢包统计。位移尝试存在明显量值漂移，不能宣称准确定位。视频由操作者保存在另一设备，提交时需另附原件。
+
+报告含SVG及PNG图。需要重新导出PNG时，可在已有Codex图片运行库的机器运行 `node tools/rasterize-report.mjs <figures目录>`；网页和报告查看不依赖该库。

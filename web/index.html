@@ -85,8 +85,8 @@
       <div class="panel-heading"><div><span class="section-number">06</span><h2>性能与数据质量</h2><p>完整性与算法效果分开呈现；未完成测试的结果仅供参考。</p></div><button class="button small subtle" id="refreshMetricsBtn">刷新评测</button></div>
       <div class="quality-grid">
         <div class="quality-block"><h3>采样与传输</h3><dl id="qualityList"><div><dt>会话完整性</dt><dd>等待记录</dd></div></dl></div>
-        <div class="quality-block"><h3>60 秒静态评测 <span id="staticBadge" class="mini-chip">未完成</span></h3><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始均值</th><th>处理均值</th><th>原始 σ</th><th>处理 σ</th><th>处理误差</th><th>波动降低</th></tr></thead><tbody id="staticRows"><tr><td colspan="7" class="empty-cell">记录后显示评测结果</td></tr></tbody></table></div><p class="muted-note">均值 / σ 单位：加速度 m/s²，角速度 °/s。处理误差：加速度 mg，角速度 °/s。请人工确认水平固定、物理 +Z 朝上，参考加速度 [0, 0, g]。</p></div>
-        <div class="quality-block"><h3>300 秒角度漂移 <span id="driftBadge" class="mini-chip">未完成</span></h3><dl id="driftList"><div><dt>积分对照</dt><dd>等待记录</dd></div></dl><p class="muted-note" id="metricNotes">原始 / 处理后角速度分别积分。时长不足、有缺帧、采样失败或积分间隙时，不标记为完整测试。</p></div>
+        <div class="quality-block"><h3>60 秒静态评测 <span id="staticBadge" class="mini-chip">未完成</span></h3><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始均值</th><th>处理均值</th><th>原始 σ</th><th>处理 σ</th><th>处理误差</th><th>波动降低</th></tr></thead><tbody id="staticRows"><tr><td colspan="7" class="empty-cell">记录后显示评测结果</td></tr></tbody></table></div><p class="muted-note">均值 / σ 单位：加速度 m/s²，角速度 °/s。处理误差：加速度 mg，角速度 °/s。“数据完整”仅表示时长与数据完整，条件需人工确认；动态记录不能作为静态误差 / 漂移验收。请水平固定、物理 +Z 朝上，参考加速度 [0, 0, g]。</p></div>
+        <div class="quality-block"><h3>300 秒角度漂移 <span id="driftBadge" class="mini-chip">未完成</span></h3><dl id="driftList"><div><dt>积分对照</dt><dd>等待记录</dd></div></dl><p class="muted-note" id="metricNotes">原始 / 处理后角速度分别积分。“数据完整”仅表示时长与数据完整，静置条件需人工确认；动态记录不能作为静态误差 / 漂移验收。缺帧、采样失败或积分间隙均使数据不完整。</p></div>
       </div>
       <div class="assessment-note" id="assessmentNote">请先校准，再分别记录静置 60 秒、静置 300 秒，以及短时快速运动。</div>
     </section>
