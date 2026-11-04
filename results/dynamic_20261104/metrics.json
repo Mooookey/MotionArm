@@ -1,0 +1,171 @@
+{
+  "session_id": 3623475967,
+  "source": "hardware",
+  "duration_s": 73.815,
+  "coverage_s": 73.82,
+  "sample_count": 14764,
+  "complete": {
+    "session": true,
+    "static60": true,
+    "drift300": false
+  },
+  "reasons": [],
+  "static60": {
+    "complete": true,
+    "samples": 12000,
+    "duration_s": 60,
+    "axes": [
+      {
+        "name": "ax",
+        "unit": "m/s²",
+        "reference": 0,
+        "raw_mean": -1.4582569553822793,
+        "filtered_mean": -1.2804860117717802,
+        "raw_std": 3.3461181139346285,
+        "filtered_std": 2.9349310815443754,
+        "raw_error": -148.70082600911417,
+        "filtered_error": -130.57323466951308,
+        "error_unit": "mg",
+        "reduction_pct": 12.288479318105928
+      },
+      {
+        "name": "ay",
+        "unit": "m/s²",
+        "reference": 0,
+        "raw_mean": -2.842528091545602,
+        "filtered_mean": -2.4956901961593574,
+        "raw_std": 2.869784606486363,
+        "filtered_std": 2.5178223488241294,
+        "raw_error": -289.8571980794259,
+        "filtered_error": -254.4895755593763,
+        "error_unit": "mg",
+        "reduction_pct": 12.264413742645331
+      },
+      {
+        "name": "az",
+        "unit": "m/s²",
+        "reference": 9.80665,
+        "raw_mean": 8.422661778666244,
+        "filtered_mean": 7.395412011724816,
+        "raw_std": 3.4210352543881344,
+        "filtered_std": 3.0030058096865266,
+        "raw_error": -141.12752278645158,
+        "filtered_error": -245.87784699924885,
+        "error_unit": "mg",
+        "reduction_pct": 12.219384297937442
+      },
+      {
+        "name": "gx",
+        "unit": "°/s",
+        "reference": 0,
+        "raw_mean": -5.865829516539429,
+        "filtered_mean": -0.43541645084655484,
+        "raw_std": 19.266890431095064,
+        "filtered_std": 19.010848224470983,
+        "raw_error": -5.865829516539429,
+        "filtered_error": -0.43541645084655484,
+        "error_unit": "°/s",
+        "reduction_pct": 1.3289233544965362
+      },
+      {
+        "name": "gy",
+        "unit": "°/s",
+        "reference": 0,
+        "raw_mean": 0.3486043256997446,
+        "filtered_mean": -0.21692620444645247,
+        "raw_std": 13.324999898543552,
+        "filtered_std": 13.181665068768135,
+        "raw_error": 0.3486043256997446,
+        "filtered_error": -0.21692620444645247,
+        "error_unit": "°/s",
+        "reduction_pct": 1.0756835337093262
+      },
+      {
+        "name": "gz",
+        "unit": "°/s",
+        "reference": 0,
+        "raw_mean": 0.3915343511450391,
+        "filtered_mean": 0.6423968600052933,
+        "raw_std": 23.854562117930026,
+        "filtered_std": 23.4581695415117,
+        "raw_error": 0.3915343511450391,
+        "filtered_error": 0.6423968600052933,
+        "error_unit": "°/s",
+        "reduction_pct": 1.6617055239105838
+      }
+    ]
+  },
+  "drift300": {
+    "complete": false,
+    "duration_s": 73.81500000000536,
+    "raw_deg": [
+      -464.78568702289954,
+      32.47164122137398,
+      23.033167938931786
+    ],
+    "filtered_deg": [
+      -63.76379694807275,
+      -9.269753113987456,
+      41.46959705339959
+    ],
+    "skipped_intervals": 0,
+    "reasons": [
+      "记录不足 5 分钟（设备时间覆盖 73.820 秒）"
+    ]
+  },
+  "transmission": {
+    "complete": true,
+    "generated": 14764,
+    "received_unique": 14764,
+    "lost": 0,
+    "loss_pct": 0,
+    "duplicates": 0,
+    "out_of_order": 0,
+    "invalid_frames": 0,
+    "crc_errors": 0,
+    "missing_seq": 0,
+    "head_missing": 0,
+    "tail_missing": 0
+  },
+  "sampling": {
+    "source": "device",
+    "actual_hz": 200,
+    "dt_mean_us": 5000,
+    "dt_std_us": 0,
+    "dt_min_us": 5000,
+    "dt_max_us": 5000,
+    "host_gap_count": 0,
+    "timestamp_errors": 0,
+    "sample_fail": 0,
+    "stale_samples": 0,
+    "missed_deadlines": 0,
+    "queue_drops": 0,
+    "integration_gaps": 0
+  },
+  "response": {
+    "raw_peak_to_peak": [
+      18.039112408447266,
+      17.577031488037107,
+      15.401899279785155,
+      265.23664122137404,
+      144.61068702290078,
+      436.8854961832061
+    ],
+    "filtered_peak_to_peak": [
+      12.06799864768982,
+      11.89173412322998,
+      12.487491607666016,
+      247.50648498535156,
+      128.1096954345703,
+      397.2028045654297
+    ],
+    "note": "峰峰值仅为辅助量；动态响应须结合带设备时间轴的原始/处理曲线，说明延迟、幅值与动作。"
+  },
+  "notes": [
+    "静态参考要求水平固定且物理 +Z 向上；加速度误差为带符号的均值差。",
+    "静态统计使用前 60 秒及样本标准差 N-1；不足时仅提供已有数据的参考结果。",
+    "时间覆盖包含最后一个名义采样周期；积分时长只累计实际相邻时间戳间隔。",
+    "采样间隔优先使用 ESP32 摘要；电脑端仅对连续序号计算间隔，丢帧间隔单列。",
+    "漂移比较为角速度独立积分，不是融合欧拉角；长间断不桥接。"
+  ]
+}

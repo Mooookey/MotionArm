@@ -1,0 +1,6 @@
+{
+  "name": "imu-lab-console",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test *.test.js" }
+}

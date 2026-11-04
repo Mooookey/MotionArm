@@ -1,0 +1,110 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IMU 会话 3623475967 评测报告</title><style>
+:root{color-scheme:light;font-family:Segoe UI,Microsoft YaHei,sans-serif;color:#24334b;background:#eef3f9}*{box-sizing:border-box}body{margin:0}main{max-width:1260px;margin:0 auto;padding:36px 24px 70px}header{padding:28px 30px;border-radius:18px;background:#12233f;color:#fff}h1{font-size:30px;margin:0 0 12px}header p{color:#cfdbed}h2{font-size:23px;margin:0 0 14px}p,li{line-height:1.75}section{background:#fff;border:1px solid #dce5f0;border-radius:14px;margin-top:22px;padding:26px}a{color:#2563eb}img{display:block;width:100%;height:auto;border:1px solid #e4ebf3;border-radius:8px;margin:18px 0}.badge{display:inline-block;border-radius:20px;padding:5px 11px;font-size:13px;margin:4px 5px 4px 0}.pass{background:#e1f4eb;color:#14613c}.pending{background:#fff1db;color:#8c540a}.demo{background:#a22834;color:#fff;padding:12px;border-radius:8px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:12px;margin-top:20px}.card{border:1px solid #dce5f0;padding:16px;border-radius:10px}.card strong{font-size:24px;display:block;margin-top:8px}.small{font-size:13px;color:#5b6c84}.formula{padding:12px 15px;background:#f2f6fc;border-radius:8px;font-family:Consolas,Microsoft YaHei,monospace}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e3eaf2;white-space:nowrap}th{background:#f3f7fc}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f7fc;padding:16px;border-radius:8px;font-size:13px}.warning{border-left:4px solid #d97706;padding-left:15px;color:#825018}@media print{body{background:#fff}main{max-width:none;padding:0}header{background:#fff;color:#17243c;border:1px solid #ddd}header p{color:#456}section{break-inside:avoid;padding:16px;margin-top:14px}a{color:inherit;text-decoration:none}img{max-height:24cm}h2{font-size:20px}}
+</style></head><body><main><header><h1>六轴 IMU 采集与性能评测</h1><p>Session 3623475967 · 动态动作记录（动作条件需人工确认） · 硬件采集</p><p>所有曲线横轴均为 ESP32 采样时间；报告生成时间 2026-11-04T12:30:52.172Z 仅用于文件管理。</p></header>
+
+<div class="cards"><div class="card">设备时间覆盖<strong>73.82 s</strong></div><div class="card">有效去重接收<strong>14,764 帧</strong></div><div class="card">实际采样频率<strong>200 Hz</strong></div><div class="card">丢包率<strong>0%</strong></div><div class="card">processed 加速度 κ<strong>0.878083</strong><span class="small">single_pose_norm_scale</span></div></div>
+<section><h2>记录条件与完整性</h2><span class="badge pass">END 已确认</span><span class="badge pass">60s 时间与数据完整</span><span class="badge pending">5min 条件不足/数据异常</span>
+<p class="warning">完整标记只证明时长和数据链路检查通过，不能自动证明水平、静止或规定动作已完成。近似水平时，X/Y 加速度均值包含重力投影，不可把全部误差归因于传感器零偏。</p><p class="warning">单姿态重力模长比例 κ = g / ‖mean(raw a)‖ 仅用于 processed 加速度；raw 完整保留。它不能分离 offset、各轴 gain 或倾斜，不能代替六面标定。同姿态归一后重力模长接近 g 不是独立精度证明；校准数据与评测记录分开，测试内固定 κ。</p><p>设备结束摘要与数据完整性检查未发现采集错误。</p><p class="small">输入：recording.json；记录时间：2026-11-04T12:24:58.069Z；设备首时间戳：438,985,936 µs；原始时间跨度 73.815 s。时间覆盖包含最后一个名义周期，积分只使用实际相邻时间戳。</p></section>
+<section><h2>1. 测量误差</h2><p class="formula">角速度误差 = mean(ω)；加速度误差 mg = 1000 × (mean(a) − a_ref) / g；a_ref = [0,0,g]。</p><p>取设备会话前 60 秒；校准与滤波前后使用同一窗口。水平固定且 +Z 向上时参考成立。processed 加速度包含 κ 修正，同姿态均值误差下降不能直接证明精确三轴标定。</p><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始均值</th><th>处理均值</th><th>原始误差</th><th>处理误差</th><th>误差单位</th></tr></thead><tbody><tr><td>ax</td><td>-1.458257</td><td>-1.280486</td><td>-148.70083</td><td>-130.57323</td><td>mg</td></tr><tr><td>ay</td><td>-2.842528</td><td>-2.49569</td><td>-289.8572</td><td>-254.48958</td><td>mg</td></tr><tr><td>az</td><td>8.422662</td><td>7.395412</td><td>-141.12752</td><td>-245.87785</td><td>mg</td></tr><tr><td>gx</td><td>-5.86583</td><td>-0.435416</td><td>-5.86583</td><td>-0.43542</td><td>°/s</td></tr><tr><td>gy</td><td>0.348604</td><td>-0.216926</td><td>0.3486</td><td>-0.21693</td><td>°/s</td></tr><tr><td>gz</td><td>0.391534</td><td>0.642397</td><td>0.39153</td><td>0.6424</td><td>°/s</td></tr></tbody></table></div><a href="figures/01-measurement-error.svg"><img src="figures/01-measurement-error.svg" alt="静态均值误差原始与处理对比" loading="lazy"/></a></section>
+<section><h2>2. 数据波动</h2><p class="formula">样本标准差 s = sqrt(Σ(x−mean)²/(N−1))；变化比例 = (1 − s_filtered/s_raw) × 100%。</p><p>原始值仍包含共同的硬件 DLPF；这里对比额外软件处理的效果。加速度标准差也受 κ 比例影响，不能把全部变化归因于低通。原始标准差为零时变化比例不定义。</p><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始标准差</th><th>处理标准差</th><th>变化比例</th><th>单位</th></tr></thead><tbody><tr><td>ax</td><td>3.3461181</td><td>2.9349311</td><td>12.288%</td><td>m/s²</td></tr><tr><td>ay</td><td>2.8697846</td><td>2.5178223</td><td>12.264%</td><td>m/s²</td></tr><tr><td>az</td><td>3.4210353</td><td>3.0030058</td><td>12.219%</td><td>m/s²</td></tr><tr><td>gx</td><td>19.2668904</td><td>19.0108482</td><td>1.329%</td><td>°/s</td></tr><tr><td>gy</td><td>13.3249999</td><td>13.1816651</td><td>1.076%</td><td>°/s</td></tr><tr><td>gz</td><td>23.8545621</td><td>23.4581695</td><td>1.662%</td><td>°/s</td></tr></tbody></table></div><a href="figures/02-static-variation.svg"><img src="figures/02-static-variation.svg" alt="同一静态窗口六轴标准差" loading="lazy"/></a></section>
+<section><h2>3. 五分钟静止角度漂移</h2><p class="formula">θ = Σ((ω[k−1]+ω[k])/2) × (t[k]−t[k−1])；ω 为 °/s，dt 为秒。</p><p>三轴独立积分原始/处理角速度，不使用融合后的 Euler。实际积分 73.815 s；跳过异常区间 0 个。本次不能宣称完整五分钟漂移验收通过。</p><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始累计角度 °</th><th>处理累计角度 °</th></tr></thead><tbody><tr><td>X</td><td>-464.785687</td><td>-63.763797</td></tr><tr><td>Y</td><td>32.471641</td><td>-9.269753</td></tr><tr><td>Z</td><td>23.033168</td><td>41.469597</td></tr></tbody></table></div><a href="figures/03-angle-drift.svg"><img src="figures/03-angle-drift.svg" alt="五分钟原始与处理三轴角速度积分曲线" loading="lazy"/></a><ul><li>记录不足 5 分钟（设备时间覆盖 73.820 秒）</li></ul></section>
+<section><h2>4. 数据丢包与异常</h2><p class="formula">丢包率 = (ESP32 END.generated − 有效且不重复接收数) / END.generated × 100%。</p><div class="table-scroll"><table><thead><tr><th>生成</th><th>有效去重接收</th><th>丢失</th><th>丢包率</th><th>重复</th><th>倒序</th><th>CRC错误</th><th>异常帧</th></tr></thead><tbody><tr><td>14,764</td><td>14,764</td><td>0</td><td>0%</td><td>0</td><td>0</td><td>0</td><td>0</td></tr></tbody></table></div><p>头部缺失 0 帧，尾部缺失 0 帧。读取失败和无新样本独立统计，不用旧数据补齐。</p><a href="figures/04-packet-completeness.svg"><img src="figures/04-packet-completeness.svg" alt="序号缺失随设备时间和最终统计" loading="lazy"/></a></section>
+<section><h2>5. 实际采样稳定性</h2><p class="formula">实际频率 = 1,000,000 / mean(Δt_us)。采样间隔优先采用设备摘要；接收端仅对连续序号计算。</p><div class="table-scroll"><table><thead><tr><th>统计来源</th><th>实际频率 Hz</th><th>间隔均值 µs</th><th>间隔标准差 µs</th><th>最小间隔 µs</th><th>最大间隔 µs</th></tr></thead><tbody><tr><td>device</td><td>200</td><td>5,000</td><td>0</td><td>5,000</td><td>5,000</td></tr></tbody></table></div><div class="table-scroll"><table><thead><tr><th>采样失败</th><th>无新样本</th><th>错过周期</th><th>发送队列丢弃</th><th>积分长间断</th><th>接收序号缺口</th></tr></thead><tbody><tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr></tbody></table></div><a href="figures/05-sampling-stability.svg"><img src="figures/05-sampling-stability.svg" alt="连续序号采样时间间隔" loading="lazy"/></a></section>
+<section><h2>6. 滤波响应与原始/处理曲线</h2><p class="warning">本记录标为动态动作，但动作、幅度和响应解释仍须人工补充。对比变动时刻、峰值和停止后的恢复过程，不能只比较平滑程度。</p><p>一阶低通 y += α(x−y)，α = 1−exp(−2π·fc·dt)。陀螺处理包含启动零偏扣除，加速度处理包含 κ 比例；均值、峰值和波动变化不能全部归因于低通本身。</p><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始峰峰值</th><th>处理峰峰值</th><th>单位</th></tr></thead><tbody><tr><td>ax</td><td>18.039112</td><td>12.067999</td><td>m/s²</td></tr><tr><td>ay</td><td>17.577031</td><td>11.891734</td><td>m/s²</td></tr><tr><td>az</td><td>15.401899</td><td>12.487492</td><td>m/s²</td></tr><tr><td>gx</td><td>265.236641</td><td>247.506485</td><td>°/s</td></tr><tr><td>gy</td><td>144.610687</td><td>128.109695</td><td>°/s</td></tr><tr><td>gz</td><td>436.885496</td><td>397.202805</td><td>°/s</td></tr></tbody></table></div><a href="figures/06-raw-filtered-curves.svg"><img src="figures/06-raw-filtered-curves.svg" alt="六轴原始和处理后采集曲线" loading="lazy"/></a></section>
+<section><h2>三维轴向视频与位移边界</h2><p>本静态报告不能替代实体视频。另录初始水平姿态、绕物理 +X/+Y/+Z 按右手方向各转约90°（每次先回初始），再连续组合转动至少30秒，同时拍到模块与模型。</p><p>位移为重力剔除后的短时积分估计；零速约束依赖起止静止的动作假设。六轴无绝对偏航参考，不能将短时演示作为长期定位精度证明。</p></section>
+<section><h2>配置与可追溯数据</h2><p><a href="recording.json">原始/处理完整记录 JSON</a> · <a href="data.csv">CSV（若已解码生成）</a> · <a href="metrics.json">指标 JSON（若已解码生成）</a></p><details><summary>采样配置、校准值和算法参数</summary><pre>{
+  &quot;session_id&quot;: 3623475967,
+  &quot;state&quot;: &quot;idle&quot;,
+  &quot;sample_hz&quot;: 200,
+  &quot;baud&quot;: 460800,
+  &quot;accel_lsb_per_g&quot;: 8192,
+  &quot;gyro_lsb_per_dps&quot;: 65.5,
+  &quot;g&quot;: 9.80665,
+  &quot;accel_range_g&quot;: 4,
+  &quot;gyro_range_dps&quot;: 500,
+  &quot;hardware_dlpf_hz&quot;: 44,
+  &quot;sensor_output_hz&quot;: 1000,
+  &quot;filter_hz&quot;: 20,
+  &quot;mahony_kp&quot;: 0.5,
+  &quot;mahony_ki&quot;: 0,
+  &quot;gyro_bias_dps&quot;: [
+    -5.42833185,
+    0.56595242,
+    -0.24976185
+  ],
+  &quot;accel_norm_scale&quot;: 0.878082573,
+  &quot;accel_calibration_method&quot;: &quot;single_pose_norm_scale&quot;,
+  &quot;calibrated&quot;: true,
+  &quot;calibration_samples&quot;: 601,
+  &quot;quaternion_order&quot;: &quot;wxyz&quot;,
+  &quot;coordinate_frame&quot;: &quot;right-handed body-to-world, world Z up&quot;,
+  &quot;firmware_version&quot;: &quot;1.0.0&quot;,
+  &quot;latest_status&quot;: {
+    &quot;session_id&quot;: 3623475967,
+    &quot;state&quot;: &quot;idle&quot;,
+    &quot;generated&quot;: 14764,
+    &quot;sent&quot;: 14764,
+    &quot;sample_fail&quot;: 0,
+    &quot;stale_samples&quot;: 0,
+    &quot;missed_deadlines&quot;: 0,
+    &quot;queue_drops&quot;: 0,
+    &quot;integration_gaps&quot;: 0,
+    &quot;first_t_us&quot;: 438985936,
+    &quot;last_t_us&quot;: 512800936,
+    &quot;dt_count&quot;: 14763,
+    &quot;dt_mean_us&quot;: 5000,
+    &quot;dt_std_us&quot;: 0,
+    &quot;dt_min_us&quot;: 5000,
+    &quot;dt_max_us&quot;: 5000,
+    &quot;calibrated&quot;: true,
+    &quot;last_raw_counts&quot;: [
+      314,
+      -3399,
+      8786,
+      -361,
+      45,
+      -5
+    ],
+    &quot;raw_accel_norm&quot;: 11.283626,
+    &quot;raw_gyro_norm&quot;: 5.55463,
+    &quot;calibration_progress&quot;: 601,
+    &quot;calibration_elapsed_ms&quot;: 365170,
+    &quot;calibration_phase&quot;: &quot;complete&quot;,
+    &quot;calibration_reset_reason&quot;: &quot;command&quot;,
+    &quot;calibration_resets&quot;: 5,
+    &quot;last_fresh_t_us&quot;: 528995936,
+    &quot;last_attempt_t_us&quot;: 528995936,
+    &quot;last_read_result&quot;: 1,
+    &quot;total_fresh_samples&quot;: 105735,
+    &quot;total_read_errors&quot;: 0,
+    &quot;total_stale_samples&quot;: 0
+  }
+}</pre></details><details><summary>设备 END 摘要与接收诊断</summary><pre>{
+  &quot;end&quot;: {
+    &quot;session_id&quot;: 3623475967,
+    &quot;state&quot;: &quot;idle&quot;,
+    &quot;generated&quot;: 14764,
+    &quot;sent&quot;: 14764,
+    &quot;sample_fail&quot;: 0,
+    &quot;stale_samples&quot;: 0,
+    &quot;missed_deadlines&quot;: 0,
+    &quot;queue_drops&quot;: 0,
+    &quot;integration_gaps&quot;: 0,
+    &quot;first_t_us&quot;: 438985936,
+    &quot;last_t_us&quot;: 512800936,
+    &quot;dt_count&quot;: 14763,
+    &quot;dt_mean_us&quot;: 5000,
+    &quot;dt_std_us&quot;: 0,
+    &quot;dt_min_us&quot;: 5000,
+    &quot;dt_max_us&quot;: 5000,
+    &quot;calibrated&quot;: true
+  },
+  &quot;diagnostics&quot;: {
+    &quot;source&quot;: &quot;hardware&quot;,
+    &quot;crc_errors&quot;: 0,
+    &quot;invalid_frames&quot;: 0,
+    &quot;json_errors&quot;: 0,
+    &quot;discarded_bytes&quot;: 0
+  }
+}</pre></details><ul><li>静态参考要求水平固定且物理 +Z 向上；加速度误差为带符号的均值差。</li><li>静态统计使用前 60 秒及样本标准差 N-1；不足时仅提供已有数据的参考结果。</li><li>时间覆盖包含最后一个名义采样周期；积分时长只累计实际相邻时间戳间隔。</li><li>采样间隔优先使用 ESP32 摘要；电脑端仅对连续序号计算间隔，丢帧间隔单列。</li><li>漂移比较为角速度独立积分，不是融合欧拉角；长间断不桥接。</li></ul><p class="small">图线为每像素桶保留极值的显示抽样；原始完整采样保存在 JSON/CSV 中，统计使用完整有效数据。</p></section>
+</main></body></html>

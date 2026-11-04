@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>IMU LAB · 六轴运动观测台</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="IMU LAB 首页"><span class="brand-symbol">⌁</span><span>IMU<span class="brand-light">LAB</span><small>EMBEDDED MOTION CONSOLE</small></span></a>
+      <div class="top-meta"><span class="hardware-tag">ESP32 × MPU6050</span><span class="live-badge" id="connectionBadge"><i></i>尚未连接</span></div>
+    </header>
+
+    <div id="sourceBanner" class="source-banner" hidden></div>
+
+    <section class="intro">
+      <div><div class="eyebrow">SIX AXES. ONE CLEAR PICTURE.</div><h1>看见每一次运动<span class="title-dot">.</span></h1><p>200 Hz 六轴采样、机载处理与姿态重建，在同一条时间线上观察。</p></div>
+      <div class="intro-index"><strong>01—06</strong><span>基本任务 · 实时实验台</span></div>
+    </section>
+
+    <section class="control-panel" aria-label="实验控制">
+      <div class="control-main">
+        <button class="button primary" id="connectBtn"><span>↗</span> 连接设备</button>
+        <button class="button" id="disconnectBtn" disabled>断开</button>
+        <span class="control-divider"></span>
+        <button class="button record" id="startBtn" disabled><i></i> 开始记录</button>
+        <button class="button" id="stopBtn" disabled>■ 停止</button>
+        <button class="button subtle" id="calibrateBtn" disabled>静态校准</button>
+        <button class="button subtle" id="zeroBtn" disabled>位移 / 速度归零</button>
+        <button class="button icon" id="infoBtn" title="重新获取设备信息" disabled>↻</button>
+      </div>
+      <div class="control-secondary"><span id="deviceState">等待设备连接</span><span>USB SERIAL <b id="baudRate">460800</b> · 8N1</span></div>
+      <div class="notice" id="notice" role="status">连接前请关闭其他串口监视器。保持传感器静止，完成校准后开始记录。</div>
+    </section>
+
+    <section class="stat-strip" aria-label="会话概况">
+      <div class="stat"><span>设备采样频率 <small>Hz</small></span><strong id="sampleHz">—</strong><em id="hzDetail">目标 200.00 Hz</em></div>
+      <div class="stat"><span>有效接收帧 <small>FRAMES</small></span><strong id="frameCount">0</strong><em id="frameDetail">尚无会话</em></div>
+      <div class="stat"><span>采样时长 <small>SEC</small></span><strong id="duration">0.00</strong><em>ESP32 本地采样时间</em></div>
+      <div class="stat"><span>端到端丢帧率 <small>%</small></span><strong id="lossRate">未知</strong><em id="lossDetail">收到 END 后确认</em></div>
+    </section>
+
+    <div class="workspace-grid">
+      <section class="panel signal-panel">
+        <div class="panel-heading"><div><span class="section-number">01 / 02</span><h2>六轴信号</h2><p>硬件 DLPF 后原始值，与 ESP32 校准 / 软件滤波结果</p></div><div class="legend"><span class="raw-line">原始</span><span class="filtered-line">处理后</span><select id="windowSelect" aria-label="曲线显示时窗"><option value="6">最近 6 秒</option><option value="15">最近 15 秒</option><option value="60">最近 60 秒</option></select></div></div>
+        <div class="chart-grid">
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-x">X</b> 加速度</span><small>m/s²</small></div><canvas id="chart0" aria-label="X轴加速度曲线"></canvas></div>
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-x">X</b> 角速度</span><small>°/s</small></div><canvas id="chart3" aria-label="X轴角速度曲线"></canvas></div>
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-y">Y</b> 加速度</span><small>m/s²</small></div><canvas id="chart1" aria-label="Y轴加速度曲线"></canvas></div>
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-y">Y</b> 角速度</span><small>°/s</small></div><canvas id="chart4" aria-label="Y轴角速度曲线"></canvas></div>
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-z">Z</b> 加速度</span><small>m/s²</small></div><canvas id="chart2" aria-label="Z轴加速度曲线"></canvas></div>
+          <div class="chart-cell"><div class="chart-title"><span><b class="axis-z">Z</b> 角速度</span><small>°/s</small></div><canvas id="chart5" aria-label="Z轴角速度曲线"></canvas></div>
+        </div>
+        <div class="panel-foot"><span id="accelScaleNote">全帧接收与记录 · 30 Hz 绘图</span><span id="cursorInfo">t = — · seq = —</span></div>
+      </section>
+
+      <aside class="pose-column">
+        <section class="panel pose-panel">
+          <div class="panel-heading"><div><span class="section-number">03</span><h2>三维姿态</h2></div><span class="mini-chip" id="stationaryBadge">等待数据</span></div>
+          <canvas id="poseCanvas" aria-label="传感器三维姿态，XYZ为传感器坐标轴"></canvas>
+          <div class="quaternion-row" aria-label="四元数 w x y z"><span>q <small>wxyz</small></span><output id="quatW">—</output><output id="quatX">—</output><output id="quatY">—</output><output id="quatZ">—</output></div>
+          <div class="euler-grid"><div><span>ROLL</span><strong id="roll">—<small>°</small></strong></div><div><span>PITCH</span><strong id="pitch">—<small>°</small></strong></div><div><span>YAW</span><strong id="yaw">—<small>°</small></strong></div></div>
+          <div class="coordinate-note">右手坐标 · 世界 Z 向上 · 机体 → 世界 · ZYX 欧拉角<br>六轴航向为相对角，随时间漂移。</div>
+        </section>
+        <section class="panel position-panel">
+          <div class="panel-heading"><div><span class="section-number">04</span><h2>位移估计</h2></div><span class="unit">m</span></div>
+          <div class="position-row"><span class="axis-x">X</span><strong id="posX">—</strong><div class="position-track"><i id="barX"></i></div></div>
+          <div class="position-row"><span class="axis-y">Y</span><strong id="posY">—</strong><div class="position-track"><i id="barY"></i></div></div>
+          <div class="position-row"><span class="axis-z">Z</span><strong id="posZ">—</strong><div class="position-track"><i id="barZ"></i></div></div>
+          <p class="muted-note">移除重力后积分，静止时零速约束。适用于短时运动；无外部定位，累计位置会漂移。</p>
+        </section>
+      </aside>
+    </div>
+
+    <section class="panel record-panel">
+      <div class="record-head"><div><span class="section-number">05</span><h2>记录与回放</h2></div><div class="file-actions"><button class="button small" id="importBtn">导入 JSON 记录</button><input id="importFile" type="file" accept="application/json,.json" hidden><button class="button small" id="csvBtn" disabled>↓ CSV</button><button class="button small" id="jsonBtn" disabled>↓ JSON + 评测</button><button class="button small" id="pngBtn">↓ 曲线 PNG</button></div></div>
+      <div class="playback"><button class="button small" id="playBtn" disabled>▶ 回放</button><input id="timeline" type="range" min="0" max="0" value="0" aria-label="记录时间轴" disabled><span id="playTime">00:00.00 / 00:00.00</span><select id="speedSelect" aria-label="回放速度"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="10">10×</option></select><button class="button small subtle" id="liveBtn" disabled>末帧</button></div>
+      <div class="record-note" id="recordNote">CSV 保留逐帧序号、本地微秒时间戳、原始 / 处理后六轴、四元数与位移。JSON 同时保存元数据与 END 汇总。</div>
+    </section>
+
+    <section class="panel quality-panel">
+      <div class="panel-heading"><div><span class="section-number">06</span><h2>性能与数据质量</h2><p>完整性与算法效果分开呈现；未完成测试的结果仅供参考。</p></div><button class="button small subtle" id="refreshMetricsBtn">刷新评测</button></div>
+      <div class="quality-grid">
+        <div class="quality-block"><h3>采样与传输</h3><dl id="qualityList"><div><dt>会话完整性</dt><dd>等待记录</dd></div></dl></div>
+        <div class="quality-block"><h3>60 秒静态评测 <span id="staticBadge" class="mini-chip">未完成</span></h3><div class="table-scroll"><table><thead><tr><th>轴</th><th>原始均值</th><th>处理均值</th><th>原始 σ</th><th>处理 σ</th><th>处理误差</th><th>波动降低</th></tr></thead><tbody id="staticRows"><tr><td colspan="7" class="empty-cell">记录后显示评测结果</td></tr></tbody></table></div><p class="muted-note">均值 / σ 单位：加速度 m/s²，角速度 °/s。处理误差：加速度 mg，角速度 °/s。请人工确认水平固定、物理 +Z 朝上，参考加速度 [0, 0, g]。</p></div>
+        <div class="quality-block"><h3>300 秒角度漂移 <span id="driftBadge" class="mini-chip">未完成</span></h3><dl id="driftList"><div><dt>积分对照</dt><dd>等待记录</dd></div></dl><p class="muted-note" id="metricNotes">原始 / 处理后角速度分别积分。时长不足、有缺帧、采样失败或积分间隙时，不标记为完整测试。</p></div>
+      </div>
+      <div class="assessment-note" id="assessmentNote">请先校准，再分别记录静置 60 秒、静置 300 秒，以及短时快速运动。</div>
+    </section>
+
+    <details class="panel detail-panel"><summary>设备参数与事件日志 <span id="logCount">0 EVENTS</span></summary><div class="detail-grid"><pre id="metadataView">尚无设备元数据</pre><div id="eventLog" class="event-log" aria-live="polite"></div></div></details>
+    <footer><span>IMU LAB <b>/</b> 嵌入式系统限时训练</span><span>200 Hz · MPU6050 · ESP32 · OFFLINE READY</span></footer>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
