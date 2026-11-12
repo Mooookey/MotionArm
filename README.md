@@ -1,38 +1,31 @@
-# ESP32 六轴 IMU 实验
+# Robot Teleoperation MVP / 机械臂遥操作项目实施文档包
 
-200Hz MPU6050 采集、ESP32 校准/低通/Mahony 姿态/短时位移、USB 二进制传输与离线 Web 上位机。
+## 阅读入口
 
-在 PowerShell 中使用英文工作区：
+1. **[`Plan.md`](Plan.md)**：目标、边界、实物修正、总体架构、M0–M9 里程碑、功能接口与验收。
+2. [`docs/01_Hardware_Safety.md`](docs/01_Hardware_Safety.md)：两 ESP32 + MPU6050 + PCA9685 的实物接线、安全供电、夹爪风险、上电和四路标定。
+3. [`docs/02_Firmware_Control.md`](docs/02_Firmware_Control.md)：手腕端姿态/按钮/ESP-NOW，机器人端 50Hz 目标、斜坡、owner 与安全状态机。
+4. [`docs/03_Communication_Protocol.md`](docs/03_Communication_Protocol.md)：24 字节 ESP-NOW、Serial NDJSON、ACK/lease/session、FastAPI REST 与 Vue WS 数据结构。
+5. [`docs/04_Backend_Data_Replay.md`](docs/04_Backend_Data_Replay.md)：FastAPI、PySerial、SQLite、时间线、录制状态机、安全预检与回放。
+6. [`docs/05_Frontend_Vue3.md`](docs/05_Frontend_Vue3.md)：Vue 3/TS/Vite/Pinia/ECharts 的控制台、录制/回放页面与断线规则。
+7. [`docs/06_Test_Validation.md`](docs/06_Test_Validation.md)：分层单测、模拟/通电故障测试、MVP 验收和实验报告模板。
+8. [`docs/07_Execution_Tracker.md`](docs/07_Execution_Tracker.md)：团队任务矩阵、依赖、交付条件与英文路径构建建议。
+9. [`docs/08_References_Decisions.md`](docs/08_References_Decisions.md)：与原资料冲突的口径、更正原因、开源项目的使用边界。
+10. [`docs/09_Runbook_Troubleshooting.md`](docs/09_Runbook_Troubleshooting.md)：现场演示 SOP、紧急停止与故障排查。
 
-```powershell
-Set-Location E:\Code\emb-exam
-.\tools\esp32.ps1 -Action Check
-.\tools\esp32.ps1 -Action Upload -Sketch E:\Code\emb-exam\firmware\ImuExam -Port COM3
-.\tools\serve.ps1
-```
+## 安全配置示例
 
-每次重新确认端口。浏览器打开 http://localhost:8000，使用 Edge/Chrome，点击“连接设备”；上传速率为115200，数据通信为460800。连接后保持静置约3秒完成校准，再开始采集/记录。
+- [`config/robot_calibration.example.json`](config/robot_calibration.example.json)：**全部真实行程参数初始为 `null`，`allow_arm=false`，故意不可直接驱动机械臂**；需按实物逐路校准、校验并保存新配置。
+- [`config/system.example.yaml`](config/system.example.yaml)：建议通信频率、超时与服务端本地部署设置；不是实测设备参数。
 
-- 详细操作：`docs/QUICKSTART.md`
-- 六项任务、公式、验收证据和边界：`docs/ACCEPTANCE.md`
-- 本次真实结论与数据链接：`docs/RESULTS.md`
-- 不记轴名的实体动作指引：`docs/AXIS_GUIDE.md`
-- 二进制协议：`PROTOCOL.md`
-- 固件与数学说明：`firmware/ImuExam/`
-- 无依赖网页：`web/`；`?demo=1` 为明确标记的模拟模式，不可用于验收。
-- 实测数据与报告：`results/`。网页可导入 `recording.json` 回放，CSV保留ESP32采样时间戳。
+## 必须遵守的范围
 
-自动采集（关闭网页串口和IDE监视器，模块保持静止）：
+- 实物四个 PWM 控制通道：**CH14 底座、CH15 大臂、CH13 小臂、CH12 夹爪**，不是上游五轴 CH0–4。
+- 前端**只采用 Vue 3**，不引入 React、摄像头视觉闭环或自然语言控制。
+- 采用手腕 IMU 姿态 → 关节增量速度 → 安全 PWM；**无需在 MVP 引入 XYZ 逆运动学**。
+- 普通三线舵机不回传外部关节轴角；网页与数据都只能称“指令/软件目标”，不能称“实体位置实测闭环”。
+- 机械臂承重关节在失去力矩后会下垂。配置未实测、机械无支撑、电源未确认或无法物理断电时**不得启用运动**。
 
-```powershell
-.\tools\capture.ps1 -Port COM3 -Seconds 305 -OutDir E:\Code\emb-exam\results\static -Recalibrate
-node tools/decode-capture.mjs E:\Code\emb-exam\results\static
-node tools/build-report.mjs E:\Code\emb-exam\results\static\recording.json
-.\tools\check.ps1
-```
+## 衔接原有仓库
 
-六轴 IMU 的 yaw 是相对方向，位移为有静止约束的短时积分估计。轴对齐与动态响应验收需要实际转动模块；视频需同时展示实体模块和网页。
-
-本次已保留305秒静态、完整旋转及位移尝试记录。`results/selections/manifest.json` 说明推荐展示片段的依据和原始序号/时间；切片不改样本，完整会话负责丢包统计。位移尝试存在明显量值漂移，不能宣称准确定位。视频由操作者保存在另一设备，提交时需另附原件。
-
-报告含SVG及PNG图。需要重新导出PNG时，可在已有Codex图片运行库的机器运行 `node tools/rasterize-report.mjs <figures目录>`；网页和报告查看不依赖该库。
+保留原 `AGENTS.md` 和实际工作区的工具链。建议仅将本包的 `Plan.md`、`docs/`、`config/` 放入原仓库；如果原目录已有同名文件，先用版本控制对比，**不要覆盖**已有实测校准/源代码。文档使用英文路径而中文内容，符合已有工具链限制。

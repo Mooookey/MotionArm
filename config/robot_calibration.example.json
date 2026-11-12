@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "profile_name": "robot_teleop_mvp_unverified_template",
+  "verified_on_hardware": false,
+  "allow_arm": false,
+  "calibration_id": null,
+  "operator_confirmed_initial_pose": false,
+  "board": {
+    "i2c_sda_gpio": 21,
+    "i2c_scl_gpio": 22,
+    "pca9685_expected_i2c_address_hex": "0x40",
+    "pca9685_verified_i2c_address_hex": null,
+    "servo_pwm_freq_hz_starting_point": 50,
+    "actual_servo_power_v": null,
+    "physical_cutoff_tested": false,
+    "gravity_support_tested": false
+  },
+  "joints": [
+    {
+      "id": "base",
+      "channel": 14,
+      "logical_min_deg": null,
+      "logical_max_deg": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "home_deg": null,
+      "inverted": null,
+      "max_velocity_deg_s": null,
+      "max_acceleration_deg_s2": null
+    },
+    {
+      "id": "shoulder",
+      "channel": 15,
+      "logical_min_deg": null,
+      "logical_max_deg": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "home_deg": null,
+      "inverted": null,
+      "max_velocity_deg_s": null,
+      "max_acceleration_deg_s2": null
+    },
+    {
+      "id": "elbow",
+      "channel": 13,
+      "logical_min_deg": null,
+      "logical_max_deg": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "home_deg": null,
+      "inverted": null,
+      "max_velocity_deg_s": null,
+      "max_acceleration_deg_s2": null
+    },
+    {
+      "id": "gripper",
+      "channel": 12,
+      "logical_min_deg": null,
+      "logical_max_deg": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "home_deg": null,
+      "inverted": null,
+      "max_velocity_deg_s": null,
+      "max_acceleration_deg_s2": null,
+      "open_us": null,
+      "close_us": null,
+      "max_closed_hold_ms": null
+    }
+  ],
+  "wearable": {
+    "imu_expected_i2c_address_hex": "0x68",
+    "imu_verified_i2c_address_hex": null,
+    "sda_gpio": 21,
+    "scl_gpio": 22,
+    "deadman_button_gpio": 25,
+    "mode_gripper_button_gpio": 26,
+    "buttons_active_low": true,
+    "roll_axis_sign": null,
+    "pitch_axis_sign": null,
+    "neutral_roll_deg": null,
+    "neutral_pitch_deg": null,
+    "deadzone_deg_starting_point": 5.0
+  },
+  "workcell": {
+    "workcell_id": null,
+    "fixed_pick_point_label": "A",
+    "fixed_place_point_label": "B",
+    "base_fixed": false,
+    "initial_pose_witness_photo": null,
+    "joint_space_validated": false,
+    "safe_joint_regions": null,
+    "collision_exclusion_notes": null
+  }
+}

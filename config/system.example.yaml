@@ -1,0 +1,39 @@
+# Engineering defaults only; not a validated physical configuration.
+# Production startup must refuse motion if calibration is unverified.
+protocol_version: 1
+serial:
+  baudrate: 230400
+  discovery_handshake_timeout_ms: 500
+  max_line_bytes: 512
+  enable_auto_discovery: true
+  # Do not hardcode COM3. Discover and confirm role=robot via HELLO.
+  explicit_port_override: null
+espnow:
+  # Both ESP32s must use the same channel; set only after field scan.
+  fixed_channel: null
+  peer_robot_sta_mac: null
+  wearable_control_rate_hz: 25
+robot:
+  servo_control_rate_hz: 50
+  serial_state_rate_hz: 25
+  wireless_watchdog_ms_initial: 250
+  pc_replay_watchdog_ms_initial: 250
+  require_verified_calibration: true
+  require_operator_initial_pose_confirm: true
+recording:
+  database_path: "data/recordings/teleop.sqlite3"
+  workcell_id: null
+  allow_interrupted_recordings_for_replay: false
+  max_record_minutes: 20
+replay:
+  send_rate_hz: 25
+  preflight_token_ttl_seconds: 30
+  allow_autoresume_after_reconnect: false
+  reject_calibration_mismatch: true
+web:
+  bind_host: "127.0.0.1"
+  port: 8000
+  telemetry_ws_rate_hz: 15
+  cors_allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
