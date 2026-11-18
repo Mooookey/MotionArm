@@ -363,9 +363,12 @@ class Runtime:
 
 
 def create_app(source=None, db_path=None, calibration_path=None):
-    source = source or os.environ.get("MOTIONARM_SOURCE", "mock")
+    source = source or os.environ.get("MOTIONARM_SOURCE", "wearable")
+    if source == "wearable":
+        from .virtual_api import create_virtual_app
+        return create_virtual_app(db_path=db_path)
     if source not in ("mock", "serial"):
-        raise ValueError("MOTIONARM_SOURCE must be mock or serial")
+        raise ValueError("MOTIONARM_SOURCE must be wearable, mock or serial")
     database = db_path or os.environ.get("MOTIONARM_DB_PATH", str(ROOT / "data" / f"{source}.sqlite3"))
     calibration = calibration_path or os.environ.get("MOTIONARM_CALIBRATION", str(ROOT / "config" / "robot_calibration.json"))
 

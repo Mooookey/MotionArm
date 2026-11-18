@@ -1,12 +1,13 @@
 # 当前实物开发入口（2026-11-18）
 
+- **真实 IMU 三维控制台**：[启动与操作](docs/16_Virtual_Console.md)。默认 `wearable` 模式，腕端 USB → FastAPI → 虚拟执行端 → Vue/Three.js。启用时设参考并回初始，A 短按开始／暂停，B 短按夹爪，Pitch 协同控制大小臂，采用固定参考限位；支持录制和离线历史回放，不连接实体执行端。
 - **最新机械臂代码**：[joint_demo_v2.ino](firmware/joint_demo_v2/joint_demo_v2.ino)，[操作说明](docs/15_Wide_Slow_Demo_V2.md)。按 `ARM → APPROACH → DRY → GRIP` 操作，底座旋转前先抬回约45°。
 - **当前标定与最初竖直3D零姿态**：[机械臂基线](docs/Robot_Baseline.md) · [参数JSON](config/robot_baseline.json)。竖直参考为1610/1630/1570；当前待机为1610/1030/1050，不混用。
 - **测量原图**：[8张尺寸图与取值说明](outlook/dimensions/README.md)。
 - **下午手腕端接手**：[交接文档](docs/Wearable_Handoff.md)，包含ESP-NOW、按键、速度控制、角度/脉宽转换和集成缺口。
 - **本机启动**：[串口演示与前后端入口](docs/Local_Quickstart.md) · [历史资料位置](docs/Archive_Access.md)。
 
-当前演示不接收ESP-NOW；正式robot仍锁定，前后端尚无实时3D或COM8独立只读源。最新组合动作已离线验证及编译，尚待现场复测。原有设计资料如下保留，具体已实现状态以当前基线与交接为准。
+当前实体演示不接收ESP-NOW，正式robot仍锁定。网页现提供真实腕端 USB 数据源与三维虚拟目标，模型不是实体关节实测反馈；腕端固件本阶段为 USB 专用。最新实体组合动作仍待现场复测。原有设计资料如下保留，具体状态以当前基线和新控制台说明为准。
 
 ---
 

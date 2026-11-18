@@ -39,6 +39,10 @@ class Recordings:
             );
             PRAGMA user_version = 1;
         """)
+        # Additive migration: existing sample payloads keep their original semantics.
+        if "metadata" not in {row[1] for row in self.db.execute("PRAGMA table_info(recordings)")}:
+            self.db.execute("ALTER TABLE recordings ADD COLUMN metadata TEXT")
+        self.db.execute("PRAGMA user_version = 2")
         with self.db:
             self.db.execute("UPDATE recordings SET status='interrupted', note='backend restart' WHERE status='recording'")
             self.db.execute("UPDATE replay_runs SET status='aborted', reason='backend restart' WHERE status='running'")
@@ -47,7 +51,7 @@ class Recordings:
         self.first_time = self.last_time = None
         self.frames = self.event_count = 0
 
-    def start(self, name, source, boot_id, calibration_id, workcell_id, fw_version):
+    def start(self, name, source, boot_id, calibration_id, workcell_id, fw_version, metadata=None):
         identifier = uuid4().hex
         with self.db:
             self.db.execute("""
@@ -56,6 +60,9 @@ class Recordings:
                 VALUES (?, ?, ?, 'recording', ?, ?, ?, ?, 1, ?)
             """, (identifier, name, int(time.time() * 1000), source, boot_id,
                   calibration_id, workcell_id, fw_version))
+            if metadata is not None:
+                self.db.execute("UPDATE recordings SET metadata=? WHERE id=?",
+                                (json.dumps(metadata, allow_nan=False), identifier))
         self.active = identifier
         self.last_seq = None
         self.first_time = self.last_time = None
@@ -118,16 +125,19 @@ class Recordings:
         if row is None:
             return None
         data = dict(row)
+        data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else None
         if detail:
             for key, table, index in (("frames", "samples", "sample_index"), ("events", "events", "event_index")):
                 rows = self.db.execute(f"SELECT payload FROM {table} WHERE recording_id=? ORDER BY {index}",
                                        (identifier,))
                 data[key] = [json.loads(row[0]) for row in rows]
-            data["angles_are"] = "applied_servo_targets_not_encoder_readings"
+            data["angles_are"] = ("virtual_joint_targets_estimated_preview" if data.get("metadata", {})
+                                  and data["metadata"].get("executor") == "virtual"
+                                  else "applied_servo_targets_not_encoder_readings")
         return data
 
     def list(self):
-        return [dict(row) for row in self.db.execute("SELECT * FROM recordings ORDER BY created_ms DESC")]
+        return [self.get(row[0]) for row in self.db.execute("SELECT id FROM recordings ORDER BY created_ms DESC")]
 
     def start_run(self, recording, preflight):
         identifier = uuid4().hex

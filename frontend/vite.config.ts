@@ -14,6 +14,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (/[\\/]node_modules[\\/]three[\\/]/.test(id)) return 'three'
           if (/[\\/]node_modules[\\/]zrender[\\/]/.test(id)) return 'chart-renderer'
           if (/[\\/]node_modules[\\/]echarts[\\/]/.test(id)) return 'charts'
         },
