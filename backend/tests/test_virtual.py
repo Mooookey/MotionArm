@@ -348,7 +348,7 @@ class VirtualControllerTests(unittest.TestCase):
             self.controller.enable()
 
     def test_configuration_identity_names_mapping_and_only_changes_stopped(self):
-        self.assertEqual(MAPPING_VERSION, "coordinated-angle-v1")
+        self.assertEqual(MAPPING_VERSION, "coordinated-angle-v2")
         self.assertEqual(LIMIT_POLICY, "FIXED_REFERENCE_HARD_CLAMP")
         self.assertEqual(self.controller.mapping_state()["limit_policy"], LIMIT_POLICY)
         old = self.controller.config_id

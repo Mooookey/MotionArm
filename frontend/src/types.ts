@@ -20,6 +20,7 @@ export interface SimulationConfig {
   roll_sign: number
   pitch_sign: number
   neutral_deg: number[]
+  mounting_profile?: string
 }
 export interface ModelConfig {
   config: SimulationConfig

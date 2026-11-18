@@ -10,7 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.virtual_api import CONVENTION, VirtualRuntime, create_virtual_app
-from app.virtual import forward_kinematics
+from app.virtual import MAPPING_VERSION, forward_kinematics
 from helpers import temporary_directory
 from test_virtual import Clock
 from test_wearable import frame
@@ -179,7 +179,7 @@ class VirtualApiTests(unittest.TestCase):
         self.assertEqual(detail["metadata"]["executor"], "virtual")
         self.assertEqual(detail["metadata"]["attitude_representation"], "relative_rotation_vector_v2")
         self.assertEqual(detail["fw_version"], "wearable-usb-click-att2")
-        self.assertEqual(detail["metadata"]["controller_version"], "coordinated-angle-v1")
+        self.assertEqual(detail["metadata"]["controller_version"], MAPPING_VERSION)
         self.assertEqual(detail["metadata"]["mapping"], "COORDINATED_RELATIVE_ANGLE")
         self.assertEqual(detail["metadata"]["limit_policy"], "FIXED_REFERENCE_HARD_CLAMP")
         self.assertEqual(detail["metadata"]["angle_convention"], CONVENTION)

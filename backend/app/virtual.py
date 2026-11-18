@@ -8,14 +8,21 @@ import time
 from .protocol import newer, finite_number
 
 POSE_KEYS = ("base_yaw_deg", "shoulder_down_deg", "elbow_down_deg")
-MAPPING_VERSION = "coordinated-angle-v1"
+MAPPING_VERSION = "coordinated-angle-v2"
 LIMIT_POLICY = "FIXED_REFERENCE_HARD_CLAMP"
+MOUNTING_PROFILES = {
+    "sensor_xy": {"label": "传感器 X/Y 原轴", "control_from_sensor": {"Roll": "+X", "Pitch": "+Y"}},
+    "hand_back_x_right_y_forearm_z_down": {
+        "label": "手背安装：X 向右、Y 沿前臂、Z 向下",
+        "control_from_sensor": {"Roll": "-Y", "Pitch": "+X"}},
+}
 DEFAULT_CONFIG = {
     "deadzone_deg": 5.0, "full_scale_deg": 30.0,
     "limits_deg": [[-45.0, 45.0], [0.0, 60.0], [0.0, 60.0]],
     "max_velocity_deg_s": [20.0, 15.0, 15.0],
     "max_acceleration_deg_s2": [60.0, 60.0, 60.0],
     "roll_sign": 1, "pitch_sign": 1, "neutral_deg": [0.0, 0.0],
+    "mounting_profile": "sensor_xy",
 }
 
 
@@ -35,8 +42,11 @@ def forward_kinematics(target, geometry):
 
 
 def validate_config(config):
+    config = {"mounting_profile": "sensor_xy", **config}
     if set(config) != set(DEFAULT_CONFIG):
         raise ValueError("未知或缺少仿真参数")
+    if not isinstance(config["mounting_profile"], str) or config["mounting_profile"] not in MOUNTING_PROFILES:
+        raise ValueError("无效的传感器安装方向配置")
     def number(value):
         return finite_number(value)
     if not all(number(config[k]) for k in ("deadzone_deg", "full_scale_deg")) or not (
@@ -65,6 +75,9 @@ class VirtualController:
     def __init__(self, clock=time.monotonic, config=None):
         self.clock = clock
         self.config = deepcopy(config or DEFAULT_CONFIG)
+        if not isinstance(self.config, dict):
+            raise ValueError("无效的仿真配置对象")
+        self.config.setdefault("mounting_profile", "sensor_xy")
         validate_config(self.config)
         self.q_req = [0., 45., 45.]
         self.q_out = self.q_req[:]
@@ -112,8 +125,18 @@ class VirtualController:
     def angles(self):
         if not self.frame:
             return [0., 0.]
-        return [math.remainder(self.frame[key] - zero, 360)
-                for key, zero in zip(("roll", "pitch"), self.config["neutral_deg"])]
+        return self._control_angles(self.config["neutral_deg"])
+
+    def _control_angles(self, sensor_reference):
+        x, y = [math.remainder(self.frame[key] - zero, 360)
+                for key, zero in zip(("roll", "pitch"), sensor_reference)]
+        return [-y, x] if self.config["mounting_profile"] == "hand_back_x_right_y_forearm_z_down" else [x, y]
+
+    def mounting_state(self):
+        profile = self.config["mounting_profile"]
+        return {"profile": profile, **deepcopy(MOUNTING_PROFILES[profile]),
+                "sensor_reference_axes": ["sensor_x_rotation_deg", "sensor_y_rotation_deg"],
+                "sensor_reference_deg": self.config["neutral_deg"][:]}
 
     def hold(self, reason, disable=False):
         self.q_req = self.q_out[:]
@@ -185,8 +208,7 @@ class VirtualController:
 
     def _track_wrist(self, old):
         angles = self.angles()
-        relative = [math.remainder(self.frame[key] - reference, 360)
-                    for key, reference in zip(("roll", "pitch"), self.anchor_wrist)]
+        relative = self._control_angles(self.anchor_wrist)
         increments = [math.remainder(new - previous, 360) for new, previous in zip(angles, self.last_wrist)]
         interval = (self.frame["ms"] - old["ms"]) % 2**32
         near_reference = all(abs(value) < 90 for value in relative)
@@ -227,6 +249,7 @@ class VirtualController:
 
     def mapping_state(self):
         return {"version": MAPPING_VERSION, "anchor_joint_deg": self.anchor_q[:],
+                "mounting": self.mounting_state(),
                 "anchor_wrist_deg": self.anchor_wrist[:] if self.anchor_wrist is not None else None,
                 "delta_wrist_deg": self.wrist_delta[:], "deadzone_deg": self.config["deadzone_deg"],
                 "limit_policy": LIMIT_POLICY, "angle_ambiguous": self.angle_ambiguous, "pitch_weights": [1., 1.],

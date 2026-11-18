@@ -139,6 +139,8 @@ class VirtualRuntime:
 
     def config_snapshot(self):
         return {"config": deepcopy(self.controller.config), "config_id": self.controller.config_id,
+                "mounting_profile": self.controller.config["mounting_profile"],
+                "mounting": self.controller.mounting_state(),
                 "geometry": deepcopy(self.geometry), "baseline_id": self.baseline["baseline_id"],
                 "warning": self.config_warning}
 
@@ -169,6 +171,10 @@ class VirtualRuntime:
                       "age_ms": age, "frames": self.frames, "parse_errors": self.parse_errors, "detail": self.detail},
             "executor": {"kind": "virtual", "label": "虚拟执行端"},
             "imu": {"roll_deg": roll, "pitch_deg": pitch, "valid": valid, "age_ms": age,
+                    "mounting_profile": c.config["mounting_profile"], "mounting": c.mounting_state(),
+                    "raw_sensor_x_deg": f.get("roll"), "raw_sensor_y_deg": f.get("pitch"),
+                    "sensor_reference_axes": ["sensor_x_rotation_deg", "sensor_y_rotation_deg"],
+                    "sensor_reference_deg": c.config["neutral_deg"][:],
                     "raw_roll_deg": f.get("roll"), "raw_pitch_deg": f.get("pitch"),
                     "neutral_deg": c.config["neutral_deg"][:],
                     "calibration_samples": f.get("cal", 0), "who": f.get("who"),
