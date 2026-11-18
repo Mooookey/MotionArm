@@ -1,0 +1,177 @@
+{
+  "baseline_id": "motionarm-2026-11-18-raised-transfer",
+  "schema_version": 1,
+  "purpose": "Recorded reference, not a verified operational firmware profile",
+  "current_sketch": "firmware/joint_demo_v2/joint_demo_v2.ino",
+  "source_sha256": {
+    "firmware/joint_demo_v2/joint_demo_v2.ino": "5e89dbd246365930de6cdd9b32ea7b1f7efbc61fa4afd6ee6e0d666f561f2a65",
+    "firmware/joint_demo_v2/ArmDemo.h": "6a32d5554f4aae879361a04b6ac8aaba148bc2db125d0e0db3ff11a835e3f4d2"
+  },
+  "evidence": {
+    "upright_reference": "user calibrated reference",
+    "angles": "user reported approximate angles; no joint encoders",
+    "low_pose_height": "user reported suitable height",
+    "latest_combined_sequence": "offline tests and compile passed; field retest pending",
+    "full_mechanical_limits_verified": false
+  },
+  "joint_order": [
+    "base",
+    "shoulder",
+    "elbow"
+  ],
+  "channels": [
+    14,
+    15,
+    13
+  ],
+  "pulse_units": "calibrator_nominal_us",
+  "pca_tick_nominal_us": 4.88,
+  "poses_us": {
+    "upright_reference": [
+      1610,
+      1630,
+      1570
+    ],
+    "ready": [
+      1610,
+      1030,
+      1050
+    ],
+    "pickup_ready": [
+      1010,
+      1030,
+      1050
+    ],
+    "pick_low": [
+      1010,
+      830,
+      877
+    ],
+    "place_raised": [
+      2000,
+      1030,
+      1050
+    ],
+    "place_low": [
+      2000,
+      830,
+      877
+    ],
+    "return_pickup_ready": [
+      1010,
+      1030,
+      1050
+    ]
+  },
+  "upright_reference_3d": {
+    "description": "Both links vertical and perpendicular to the base plane; base unrotated",
+    "base_yaw_deg": 0,
+    "shoulder_elevation_deg": 90,
+    "elbow_relative_deg": 0,
+    "shoulder_down_deg": 0,
+    "elbow_down_deg": 0,
+    "gripper_open_us": 1130,
+    "is_current_startup_pose": false
+  },
+  "current_demo_envelope_us": {
+    "base": [
+      1010,
+      2000
+    ],
+    "shoulder": [
+      830,
+      1030
+    ],
+    "elbow": [
+      877,
+      1050
+    ],
+    "gripper": [
+      1130,
+      1630
+    ]
+  },
+  "mechanical_limits_us": {
+    "base": null,
+    "shoulder": null,
+    "elbow": null,
+    "gripper": null
+  },
+  "manual_probe_window_us": [
+    1000,
+    2000
+  ],
+  "manual_step_limit_us": 150,
+  "calibration_samples": {
+    "base": [
+      {
+        "us": 1010,
+        "yaw_deg_approx": -45
+      },
+      {
+        "us": 1610,
+        "yaw_deg_approx": 0
+      },
+      {
+        "us": 2000,
+        "yaw_deg_approx": 45
+      }
+    ],
+    "shoulder": [
+      {
+        "us": 1630,
+        "down_deg_approx": 0
+      },
+      {
+        "us": 1030,
+        "down_deg_approx": 45
+      },
+      {
+        "us": 830,
+        "down_deg_approx": 60,
+        "angle_source": "linear_extrapolation"
+      }
+    ],
+    "elbow": [
+      {
+        "us": 1570,
+        "down_deg_approx": 0
+      },
+      {
+        "us": 1050,
+        "down_deg_approx": 45
+      },
+      {
+        "us": 877,
+        "down_deg_approx": 60,
+        "angle_source": "linear_extrapolation"
+      }
+    ]
+  },
+  "geometry_mm_estimated": {
+    "base_width": 90,
+    "table_to_shoulder_axis": 90,
+    "shoulder_to_elbow_axis": 115,
+    "elbow_to_gripper_mount": 65,
+    "gripper_mount_to_tip": 90
+  },
+  "gripper": {
+    "channel": 12,
+    "open_us": 1130,
+    "empty_closed_us": 1630,
+    "demo_max_hold_ms": 3000,
+    "demo_watchdog_trigger_ms": 2950,
+    "manual_and_current_radio_profile_max_hold_ms": 700,
+    "loaded_grasp_verified": false
+  },
+  "timings_ms": {
+    "approach_base": 720,
+    "lift": 500,
+    "lower": 500,
+    "turn_90deg": 1440,
+    "open_output": 350,
+    "close_settle": 160,
+    "planned_closed_duration": 2600
+  },
+  "archive_path": "E:\\学科文件\\嵌入式\\大作业\\机械臂开发\\归档_2026-11-18"
+}

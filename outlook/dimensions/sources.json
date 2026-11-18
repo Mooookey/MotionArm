@@ -1,0 +1,50 @@
+[
+  {
+    "source_name": "codex-clipboard-7f71710f-4951-40fe-8a41-ed7369aa30e2.jpg",
+    "file": "01_side_lengths_12_7_8.jpg",
+    "sha256": "77ae74c71a6d918ea86b7b7bf032cd0a6dc87c8eb82d92e076b3104279b90050",
+    "note": "侧视总览：12/7/8 cm及底座3/6 cm"
+  },
+  {
+    "source_name": "codex-clipboard-e9637953-23a9-489e-a600-3f30f789f578.jpg",
+    "file": "02_base_heights_3_6.jpg",
+    "sha256": "acc8001993ae53b374294d1003dd3d605d7cf9f7168812f3cddb3e826caf6b91",
+    "note": "底座至肩轴的3+6 cm分段"
+  },
+  {
+    "source_name": "codex-clipboard-2e303034-4b51-462e-b06e-94b047497ecd.jpg",
+    "file": "03_side_lengths_11_6_8.jpg",
+    "sha256": "41d865dbfcf4a8fffe317f9295119cbbfdde2317c94dfc0a8234b13666250ba8",
+    "note": "另一组侧视：11/6/8 cm"
+  },
+  {
+    "source_name": "codex-clipboard-ccdb31ab-1e6b-4b18-92c9-251f8b835040.jpg",
+    "file": "04_side_lengths_11_6_8.jpg",
+    "sha256": "17049d0ef7432598a3060f46d51365f9f96498d257a72d2e867938666c871c9a",
+    "note": "相近机位复测：11/6/8 cm"
+  },
+  {
+    "source_name": "codex-clipboard-6d00ce39-42fe-48bf-9c11-cece00efc694.jpg",
+    "file": "05_gripper_and_mount_10_5.jpg",
+    "sha256": "46313f0df899d6db53a8cc60c2cbad941bd722f21c7b5417b295765c04f96fd8",
+    "note": "竖直外形：夹爪总段10 cm、安装段5 cm"
+  },
+  {
+    "source_name": "codex-clipboard-cf15dbfa-fa0a-427e-ba3b-ba5f33a4066b.jpg",
+    "file": "06_upright_segments_10_5_10.jpg",
+    "sha256": "bca59da30fda1c73eae00a1b7819876afae6976deb304306ff349822b4d4e94a",
+    "note": "竖直外形：10/5/10 cm，不等于全部关节轴距"
+  },
+  {
+    "source_name": "codex-clipboard-ead8c8c2-5def-4233-a3e2-a50b9a8bc7ba.jpg",
+    "file": "07_base_width_9.jpg",
+    "sha256": "81210ee8962851218b351d4f3a75f17bedd3d7e2fccaa2af26b76680ca17f649",
+    "note": "底板宽9 cm"
+  },
+  {
+    "source_name": "codex-clipboard-1f6783d3-4cfa-467f-a7d8-718290cf68a4.jpg",
+    "file": "08_base_width_and_height_9_4.jpg",
+    "sha256": "4595d6ed7f4eb2176f16aec3423ad8821984c1f7239ef626e9929f68228a6974",
+    "note": "底板宽9 cm、转台附近高度4 cm"
+  }
+]

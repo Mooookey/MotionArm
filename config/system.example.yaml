@@ -2,20 +2,21 @@
 # Production startup must refuse motion if calibration is unverified.
 protocol_version: 1
 serial:
-  baudrate: 230400
-  discovery_handshake_timeout_ms: 500
+  baudrate: 115200
+  discovery_handshake_timeout_ms: 2400
   max_line_bytes: 512
   enable_auto_discovery: true
   # Do not hardcode COM3. Discover and confirm role=robot via HELLO.
   explicit_port_override: null
 espnow:
-  # Both ESP32s must use the same channel; set only after field scan.
-  fixed_channel: null
-  peer_robot_sta_mac: null
+  # Matches MotionArmLink.h and MotionArmPeers.h; recheck after replacing a board.
+  fixed_channel: 6
+  peer_robot_sta_mac: "C0:CD:D6:D0:9B:54"
+  peer_wearable_sta_mac: "EC:E3:34:EF:81:64"
   wearable_control_rate_hz: 25
 robot:
   servo_control_rate_hz: 50
-  serial_state_rate_hz: 25
+  serial_state_rate_hz: 10
   wireless_watchdog_ms_initial: 250
   pc_replay_watchdog_ms_initial: 250
   require_verified_calibration: true

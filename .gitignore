@@ -1,0 +1,14 @@
+# Local dependencies and generated artifacts
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tsbuildinfo
+artifacts/
+data/
+*.log
+*.bin
+*.elf
+*.map

@@ -1,3 +1,5 @@
+> 当前本机实现与下午交接以 [Wearable_Handoff.md](Wearable_Handoff.md) 为准；以下原设计规格保留。实际串口为115200、ESP-NOW为信道6，最新串口演示与正式无线固件是不同入口。
+
 # 03｜通信协议 v1：ESP-NOW、USB Serial、REST 与 WebSocket
 
 > 通信协议是双端固件、Python 后端和 Vue 3 的唯一数据契约。本文中的消息体是**拟定规格**，应在编码前锁定并为每次修改提高 `protocol_version`；示例不是声称已有固件支持。
