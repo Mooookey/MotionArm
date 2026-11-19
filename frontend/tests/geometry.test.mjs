@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fallbackGeometry, referencePose, tipPosition, poseAt } from '../src/geometry.ts'
 import { nextAccelerationWarning, sceneResizeAction } from '../src/displayStability.ts'
-import { coordinatedFollowLabel, hasButtonClickCounters } from '../src/controlPresentation.ts'
+import { coordinatedFollowLabel } from '../src/controlPresentation.ts'
+import { validFrame, validModelConfig } from '../src/telemetry.ts'
 
 test('upright assembly reference reaches 360mm without forward displacement', () => {
   const p = tipPosition({ ...referencePose, shoulder_down_deg: 0, elbow_down_deg: 0 }, fallbackGeometry)
@@ -79,13 +80,6 @@ test('deliberate viewport resize can fit the model and zero-size observations ar
   assert.equal(sceneResizeAction(sceneSize, { ...sceneSize, width: 0 }), 'none')
 })
 
-test('initialization only accepts firmware with two valid click counters, including zero and wrap endpoints', () => {
-  assert.equal(hasButtonClickCounters({ ac: 0, bc: 0 }), true)
-  assert.equal(hasButtonClickCounters({ ac: 0xffffffff, bc: 1 }), true)
-  for (const buttons of [undefined, null, {}, { ac: 1 }, { ac: true, bc: 0 }, { ac: -1, bc: 0 }, { ac: 1.5, bc: 0 }, { ac: 0, bc: 0x100000000 }]) {
-    assert.equal(hasButtonClickCounters(buttons), false)
-  }
-})
 test('running and paused labels remain latched when the physical A button is released', () => {
   const sequence = [
     { a: false, enabled: false, armed: false, label: '尚未启用' },
@@ -96,4 +90,52 @@ test('running and paused labels remain latched when the physical A button is rel
     { a: false, enabled: false, armed: true, label: '尚未启用' },
   ]
   for (const state of sequence) assert.equal(coordinatedFollowLabel(state.enabled, state.armed), state.label)
+})
+
+const liveFrame = () => ({
+  schema_version: 3, source: 'wearable', server_time_ms: 1000,
+  input: { kind: 'imu_usb', status: 'valid', attitude_representation: 'quaternion_sensor_to_world_v3' },
+  executor: { kind: 'virtual' },
+  imu: { valid: true, quaternion: [1, 0, 0, 0], gyro_dps: [0, 0, 0], accel_g: [0, 0, 1], roll_deg: null, pitch_deg: null },
+  buttons: { a: false, b: false, ac: 0, bc: 0 },
+  control: { enabled: false, armed: false, can_enable: false, gate_status: 'DISABLED', blockers: [],
+    follow: { version: 'coordinated-angle-v3', reference_quaternion: null, delta_rotation_vector_deg: null } },
+  joint_state: { requested: { ...referencePose }, output_target: { ...referencePose }, measured: null },
+  recording: { active: false }, replay: { active: false }, events: [],
+})
+test('live telemetry requires V3 and rejects old or incomplete quaternion diagnostics', () => {
+  assert.equal(validFrame(liveFrame()), true)
+  for (const change of [
+    (f) => { f.schema_version = 2 },
+    (f) => { delete f.imu.gyro_dps },
+    (f) => { f.imu.accel_g = [0, 1] },
+    (f) => { f.imu.quaternion = [0, 0, 0, 0] },
+    (f) => { f.imu.quaternion = [Infinity, 0, 0, 0] },
+    (f) => { delete f.control.can_enable },
+    (f) => { delete f.buttons.bc },
+  ]) {
+    const value = liveFrame(); change(value)
+    assert.equal(validFrame(value), false)
+  }
+})
+test('disconnected telemetry uses explicit null diagnostics and no fabricated relative angles', () => {
+  const value = liveFrame()
+  value.input.status = 'disconnected'; value.imu.valid = false
+  value.imu.quaternion = value.imu.gyro_dps = value.imu.accel_g = null
+  value.buttons.ac = value.buttons.bc = null
+  assert.equal(validFrame(value), true)
+  assert.equal(value.imu.roll_deg, null)
+  assert.equal(value.control.follow.reference_quaternion, null)
+})
+test('current config rejects removed mounting/sign/neutral fields at the live boundary', () => {
+  const model = {
+    config: { deadzone_deg: 5, limits_deg: [[-45, 45], [0, 60], [0, 60]], max_velocity_deg_s: [20, 15, 15], max_acceleration_deg_s2: [60, 60, 60] },
+    config_id: 'virtual:test', baseline_id: 'baseline', geometry: fallbackGeometry,
+    mounting: { profile: 'hand_back_x_right_y_forearm_z_down', control_from_sensor: { Roll: '-Y', Pitch: '+X', Z: '+Z' }, joint_signs: [1, -1] }, warning: null,
+  }
+  assert.equal(validModelConfig(model), true)
+  assert.equal(validModelConfig({ ...model, mounting: { ...model.mounting, joint_signs: [-1, -1] } }), false)
+  for (const key of ['full_scale_deg', 'neutral_deg', 'mounting_profile', 'roll_sign', 'pitch_sign']) {
+    assert.equal(validModelConfig({ ...model, config: { ...model.config, [key]: 1 } }), false)
+  }
 })

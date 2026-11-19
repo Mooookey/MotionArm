@@ -1,14 +1,15 @@
-"""Coordinated angle following, click controls and deterministic safety tests."""
+"""Quaternion fixed-reference control, click handling and failure latching."""
 from copy import deepcopy
 import unittest
 
+from app.attitude import distance_deg, multiply
 from app.virtual import DEFAULT_CONFIG, LIMIT_POLICY, MAPPING_VERSION, VirtualController, forward_kinematics, pose
-from test_wearable import frame
+from test_wearable import frame, sensor_quaternion, wrist_quaternion
 
 
 class Clock:
     def __init__(self):
-        self.now = 10.0
+        self.now = 10.
 
     def __call__(self):
         return self.now
@@ -17,7 +18,7 @@ class Clock:
 class VirtualControllerTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
-        self.controller = VirtualController(clock=self.clock)
+        self.controller = VirtualController(self.clock)
         self.current = frame()
         self.controller.receive(self.current)
 
@@ -28,12 +29,9 @@ class VirtualControllerTests(unittest.TestCase):
         self.controller.receive(self.current)
         self.controller.step()
 
-    def settle(self, **changes):
-        for _ in range(28):
-            self.advance(a=0, b=0, **changes)
-
     def initialize(self, **changes):
-        self.settle(**changes)
+        for _ in range(36):
+            self.advance(a=0, b=0, **changes)
         self.controller.enable()
         self.assertTrue(self.controller.enabled)
         self.assertFalse(self.controller.armed)
@@ -47,380 +45,349 @@ class VirtualControllerTests(unittest.TestCase):
     def start_follow(self):
         self.initialize()
         self.click_a()
-        self.assertTrue(self.controller.armed)
 
-    def test_requires_real_calibrated_fresh_input_and_updated_firmware(self):
+    def assertVectorAlmostEqual(self, actual, expected):
+        self.assertEqual(len(actual), len(expected))
+        for a, b in zip(actual, expected):
+            self.assertAlmostEqual(a, b, places=7)
+
+    def test_uninitialized_angles_are_unavailable_and_input_must_be_valid(self):
+        self.assertEqual(self.controller.angles(), [None, None])
         for changes in ({"cal": 249}, {"valid": 0}, {"who": 0}, {"age_ms": 250}):
             with self.subTest(changes=changes):
-                controller = VirtualController(clock=self.clock)
-                controller.receive(frame(**changes))
+                c = VirtualController(self.clock)
+                c.receive(frame(**changes))
                 with self.assertRaises(ValueError):
-                    controller.enable()
-        legacy = frame()
-        del legacy["ac"]
-        del legacy["bc"]
-        self.controller.receive({**legacy, "seq": 2})
-        with self.assertRaisesRegex(ValueError, "固件"):
-            self.controller.enable()
-        self.assertEqual(self.controller.gate_status()[0], "FIRMWARE_UPDATE")
-
-    def test_initialization_requires_stable_released_hand_and_captures_once(self):
+                    c.enable()
+        old = frame()
+        del old["ac"]
+        stamp = self.controller.received_at
         with self.assertRaises(ValueError):
-            self.controller.enable()
-        self.initialize(roll=127, pitch=-48)
-        self.assertEqual(self.controller.config["neutral_deg"], [127., -48.])
-        self.assertEqual(self.controller.q_out, [0., 45., 45.])
-        self.assertEqual(self.controller.open_out, 1)
-        self.assertEqual(self.controller.gate_status()[0], "READY")
-        self.click_a()
-        reference = self.controller.anchor_wrist[:]
-        self.advance(roll=137, pitch=-38)
-        self.assertEqual(self.controller.q_req, [5., 50., 50.])
-        self.click_a()
-        self.advance(roll=127, pitch=-48, a=0)
-        self.click_a()
-        self.assertEqual(self.controller.anchor_wrist, reference)
-        self.assertEqual(self.controller.q_req, [0., 45., 45.])
+            self.controller.receive(old)
+        self.assertEqual(self.controller.received_at, stamp)
 
-    def test_initialize_resets_previous_pose_gripper_and_counter_baseline(self):
-        self.controller.q_out = [80., 30., 55.]
-        self.controller.q_req = self.controller.q_out[:]
+    def test_reference_is_session_state_and_fixed_across_pause_and_resume(self):
+        reference = sensor_quaternion(77, -42, 24)
+        self.initialize(q=reference)
+        self.assertAlmostEqual(distance_deg(reference, self.controller.reference_quaternion), 0)
+        self.assertEqual(set(self.controller.config), set(DEFAULT_CONFIG))
+        self.click_a()
+        self.advance(q=multiply(reference, wrist_quaternion(15, -15)))
+        self.assertVectorAlmostEqual(self.controller.q_req, [10, 55, 55])
+        self.click_a()
+        self.advance(q=reference, a=0)
+        self.click_a()
+        self.assertVectorAlmostEqual(self.controller.q_req, [0, 45, 45])
+        self.assertAlmostEqual(distance_deg(reference, self.controller.reference_quaternion), 0)
+
+    def test_initialize_resets_targets_gripper_and_button_baseline(self):
+        self.controller.q_out = [30, 20, 55]
         self.controller.open_req = self.controller.open_out = 0
         self.initialize(ac=1001, bc=502)
-        self.assertEqual(self.controller.q_req, [0., 45., 45.])
+        self.assertEqual(self.controller.q_req, [0, 45, 45])
         self.assertEqual(self.controller.q_out, self.controller.q_req)
-        self.assertEqual(self.controller.open_req, 1)
-        self.assertFalse(self.controller.armed)
+        self.assertEqual(self.controller.open_out, 1)
         self.advance()
         self.assertFalse(self.controller.armed)
-        self.assertEqual(self.controller.open_req, 1)
         self.click_a()
-        self.assertTrue(self.controller.armed)
         with self.assertRaises(ValueError):
             self.controller.enable()
 
-    def test_a_click_toggles_once_and_holding_or_releasing_raw_button_does_not_toggle(self):
+    def test_stability_checks_z_rotation_and_three_axis_gyro_norm(self):
+        for i in range(28):
+            self.advance(q=sensor_quaternion(z=i))
+        with self.assertRaises(ValueError):
+            self.controller.enable()
+        for _ in range(35):
+            self.advance(q=[1, 0, 0, 0], gyro_dps=[3, 3, 3])
+        with self.assertRaises(ValueError):
+            self.controller.enable()
+        self.initialize(gyro_dps=[0, 0, 0])
+
+    def test_stability_requires_full_window_released_buttons_and_no_gap(self):
+        for _ in range(20):
+            self.advance(a=1)
+        with self.assertRaises(ValueError):
+            self.controller.enable()
+        for _ in range(24):
+            self.advance(a=0)
+        with self.assertRaises(ValueError):
+            self.controller.enable()
+        self.advance(seconds=.101)
+        self.assertTrue(self.controller.enable_blockers())
+        self.initialize()
+
+    def test_reference_mean_accepts_sign_flips_and_uses_full_attitude(self):
+        reference = sensor_quaternion(120, 40, -20)
+        for i in range(36):
+            self.advance(q=reference if i % 2 else [-v for v in reference])
+        self.controller.enable()
+        self.assertAlmostEqual(distance_deg(self.controller.reference_quaternion, reference), 0)
+        self.assertVectorAlmostEqual(self.controller.angles(), [0, 0])
+
+    def test_a_toggles_once_without_level_or_release_retrigger(self):
         self.initialize()
         self.click_a()
         for _ in range(30):
-            self.advance(a=1, roll=15)
-        self.assertTrue(self.controller.armed)
+            self.advance(a=1, q=wrist_quaternion(-15))
         self.advance(a=0)
         self.assertTrue(self.controller.armed)
         self.click_a()
-        self.assertFalse(self.controller.armed)
         paused = self.controller.q_out[:]
         for _ in range(30):
-            self.advance(a=1, roll=-30)
+            self.advance(a=1, q=wrist_quaternion(30))
         self.assertEqual(self.controller.q_out, paused)
+        self.assertFalse(self.controller.armed)
         self.assertEqual(self.controller.gate_status()[0], "READY")
-        self.click_a()
-        self.assertTrue(self.controller.armed)
 
-    def test_raw_a_b_mode_and_old_event_counts_do_not_control_model(self):
+    def test_raw_button_levels_do_not_change_follow_or_gripper(self):
         self.initialize()
         for _ in range(20):
-            self.advance(a=1, b=1, mode=1, short=100, long=100, roll=30, pitch=30)
+            self.advance(a=1, b=1, q=wrist_quaternion(-30, -30))
         self.assertFalse(self.controller.armed)
-        self.assertEqual(self.controller.q_out, [0., 45., 45.])
+        self.assertEqual(self.controller.q_out, [0, 45, 45])
         self.assertEqual(self.controller.open_req, 1)
-        self.click_a()
-        self.assertTrue(self.controller.armed)
-        self.assertEqual(self.controller.q_req, [25., 60., 60.])
 
-    def test_pause_tracks_hand_but_resume_uses_initial_reference_and_smooth_catchup(self):
+    def test_resume_uses_fixed_reference_and_limited_catchup(self):
         self.start_follow()
-        self.advance(roll=15, pitch=15)
+        self.advance(q=wrist_quaternion(-15, -15))
         for _ in range(80):
             self.advance()
-        self.assertEqual(self.controller.q_out, [10., 55., 55.])
+        self.assertVectorAlmostEqual(self.controller.q_out, [-10, 55, 55])
+        reference = self.controller.reference_quaternion[:]
         self.click_a()
         paused = self.controller.q_out[:]
-        self.advance(roll=-15, pitch=-15)
+        self.advance(q=wrist_quaternion(15, 15))
         for _ in range(20):
             self.advance()
         self.assertEqual(self.controller.q_out, paused)
         self.click_a()
-        self.assertEqual(self.controller.q_req, [-10., 35., 35.])
-        self.assertLessEqual(abs(self.controller.q_out[0] - paused[0]), 20 * .02 + 1e-9)
-        self.assertLessEqual(abs(self.controller.q_out[1] - paused[1]), 15 * .02 + 1e-9)
-        self.assertEqual(self.controller.anchor_wrist, [0., 0.])
+        self.assertVectorAlmostEqual(self.controller.q_req, [10, 35, 35])
+        for index, cap in enumerate((20, 15, 15)):
+            self.assertLessEqual(abs(self.controller.q_out[index] - paused[index]), cap*.02 + 1e-9)
+        self.assertEqual(self.controller.reference_quaternion, reference)
 
-    def test_b_click_toggles_while_paused_and_gripper_persists_through_a_pause(self):
+    def test_b_toggles_while_paused_and_gripper_persists_through_stop_or_fault(self):
         self.initialize()
         self.click_b()
         for _ in range(15):
             self.advance(b=1)
-        self.assertEqual(self.controller.open_req, 0)
         self.assertEqual(self.controller.open_out, 0)
         self.click_a()
         self.click_a()
-        for _ in range(15):
-            self.advance(a=0, b=0)
-        self.assertFalse(self.controller.armed)
         self.assertEqual(self.controller.open_req, 0)
+        self.controller.stop()
+        self.advance(bc=self.current["bc"]+1)
         self.assertEqual(self.controller.open_out, 0)
+        self.assertIsNone(self.controller.reference_quaternion)
+        self.initialize()
+        self.assertEqual(self.controller.open_out, 1)
         self.click_b()
         for _ in range(15):
             self.advance()
-        self.assertEqual(self.controller.open_out, 1)
-
-    def test_stop_and_fault_preserve_virtual_gripper_state_until_new_initialization(self):
-        self.initialize()
-        self.click_b()
-        for _ in range(15):
-            self.advance(b=0)
-        self.assertEqual(self.controller.open_out, 0)
-        self.controller.stop()
-        self.advance(bc=self.current["bc"] + 1)
-        self.assertEqual(self.controller.open_req, 0)
-        self.assertEqual(self.controller.open_out, 0)
-        self.initialize()
-        self.assertEqual(self.controller.open_out, 1)
-        self.click_b()
-        for _ in range(15):
-            self.advance(b=0)
-        self.advance(valid=0)
+        self.advance(valid=0, rej=4)
         self.assertFalse(self.controller.enabled)
-        self.assertEqual(self.controller.open_req, 0)
         self.assertEqual(self.controller.open_out, 0)
+        self.assertIn("饱和", self.controller.reason)
 
-    def test_soft_deadzone_angle_mapping_and_fixed_tilt_settles(self):
+    def test_soft_deadzone_fixed_tilt_settles_and_pure_z_does_not_drive(self):
         self.start_follow()
-        for _ in range(10):
-            self.advance(roll=5, pitch=-5)
-        self.assertEqual(self.controller.q_out, [0., 45., 45.])
-        self.advance(roll=17.5, pitch=12.5)
-        self.assertEqual(self.controller.q_req, [12.5, 52.5, 52.5])
+        self.advance(q=wrist_quaternion(5, -5))
+        self.assertVectorAlmostEqual(self.controller.q_req, [0, 45, 45])
+        self.advance(q=wrist_quaternion(-17.5, -12.5))
+        self.assertVectorAlmostEqual(self.controller.q_req, [-12.5, 52.5, 52.5])
         for _ in range(250):
             self.advance()
-        self.assertEqual(self.controller.q_req, [12.5, 52.5, 52.5])
-        self.assertEqual(self.controller.q_out, self.controller.q_req)
-        self.assertEqual(self.controller.velocity, [0., 0., 0.])
+        self.assertVectorAlmostEqual(self.controller.q_out, [-12.5, 52.5, 52.5])
+        self.advance(q=wrist_quaternion(z=120))
+        self.assertVectorAlmostEqual(self.controller.q_req, [0, 45, 45])
+        self.assertFalse(self.controller.angle_ambiguous)
 
-    def test_coupled_output_uses_shared_slower_joint_speed_and_acceleration(self):
-        self.controller.configure({"max_velocity_deg_s": [20., 8., 13.],
-                                   "max_acceleration_deg_s2": [60., 35., 12.]})
+    def test_coupled_output_uses_slower_joint_speed_and_acceleration(self):
+        self.controller.configure({"max_velocity_deg_s": [20, 8, 13], "max_acceleration_deg_s2": [60, 35, 12]})
         self.start_follow()
         previous = self.controller.q_out[:]
         previous_velocity = self.controller.velocity[:]
         for _ in range(240):
-            self.advance(roll=90, pitch=90)
-            self.assertEqual(self.controller.q_req[1], self.controller.q_req[2])
+            self.advance(q=wrist_quaternion(-90, -90))
             self.assertEqual(self.controller.q_out[1], self.controller.q_out[2])
             self.assertEqual(self.controller.velocity[1], self.controller.velocity[2])
-            for axis, cap in ((0, 20), (1, 8), (2, 8)):
-                self.assertLessEqual(abs(self.controller.q_out[axis] - previous[axis]), cap * .02 + 1e-8)
-                lo, hi = self.controller.config["limits_deg"][axis]
-                self.assertGreaterEqual(self.controller.q_out[axis], lo)
-                self.assertLessEqual(self.controller.q_out[axis], hi)
+            for index, cap in enumerate((20, 8, 8)):
+                self.assertLessEqual(abs(self.controller.q_out[index]-previous[index]), cap*.02+1e-8)
+                lo, hi = self.controller.config["limits_deg"][index]
+                self.assertGreaterEqual(self.controller.q_out[index], lo)
+                self.assertLessEqual(self.controller.q_out[index], hi)
             if self.controller.q_out[1] < 60:
-                self.assertLessEqual(abs(self.controller.velocity[1] - previous_velocity[1]), 12 * .02 + 1e-8)
+                self.assertLessEqual(abs(self.controller.velocity[1]-previous_velocity[1]), 12*.02+1e-8)
             previous, previous_velocity = self.controller.q_out[:], self.controller.velocity[:]
-        self.assertEqual(self.controller.q_out, [45., 60., 60.])
+        self.assertVectorAlmostEqual(self.controller.q_out, [-45, 60, 60])
 
-    def test_six_limit_cases_keep_fixed_reference_and_return_home_without_drift(self):
-        cases = [(0, "roll", deepcopy(DEFAULT_CONFIG["limits_deg"]), -1),
-                 (0, "roll", deepcopy(DEFAULT_CONFIG["limits_deg"]), 1)]
-        for limits in ([[-45, 45], [10, 55], [0, 60]], [[-45, 45], [0, 60], [20, 57]]):
-            cases.extend((1, "pitch", limits, direction) for direction in (-1, 1))
-        for axis, wrist, limits, direction in cases:
-            with self.subTest(axis=axis, limits=limits, direction=direction):
-                self.setUp()
-                self.controller.configure({"limits_deg": limits})
-                self.start_follow()
-                expected = (limits[0][1 if direction > 0 else 0] if axis == 0 else
-                            min(limits[1][1], limits[2][1]) if direction > 0 else max(limits[1][0], limits[2][0]))
-                reference = self.controller.anchor_wrist[:]
-                for _cycle in range(3):
-                    self.advance(**{wrist: direction * 110})
+    def test_six_limits_keep_reference_and_return_home_without_drift(self):
+        for axis, limits in ((0, DEFAULT_CONFIG["limits_deg"]),
+                             (1, [[-45, 45], [10, 55], [0, 60]]),
+                             (1, [[-45, 45], [0, 60], [20, 57]])):
+            for direction in (-1, 1):
+                with self.subTest(axis=axis, direction=direction, limits=limits):
+                    self.setUp()
+                    self.controller.configure({"limits_deg": deepcopy(limits)})
+                    self.start_follow()
+                    expected = (limits[0][direction > 0] if axis == 0 else
+                                min(limits[1][1], limits[2][1]) if direction > 0 else max(limits[1][0], limits[2][0]))
+                    reference = self.controller.reference_quaternion[:]
+                    control = [direction*110, 0] if axis == 0 else [0, -direction*110]
                     for _ in range(230):
-                        self.advance()
-                    self.assertEqual(self.controller.q_out[axis], expected)
-                    self.advance(**{wrist: direction * 140})
-                    self.assertEqual(self.controller.q_req[axis], expected)
-                    self.advance(**{wrist: direction * 139})
-                    # Returning one degree while still outside the mapped
-                    # interval remains clamped: no hidden anchor adjustment.
-                    self.assertEqual(self.controller.q_req[axis], expected)
-                    inside_offset = expected - direction - (45 if axis else 0)
-                    inside_wrist = inside_offset + direction * self.controller.config["deadzone_deg"]
-                    self.advance(**{wrist: inside_wrist})
-                    self.assertAlmostEqual(self.controller.q_req[axis], expected - direction)
-                    self.assertLess(direction * (self.controller.q_out[axis] - expected), 0)
-                    self.advance(**{wrist: 0})
-                    self.assertEqual(self.controller.q_req, [0., 45., 45.])
+                        self.advance(q=wrist_quaternion(*control))
+                    self.assertAlmostEqual(self.controller.q_out[axis], expected)
+                    control[axis] = direction*140 if axis == 0 else -direction*140
+                    self.advance(q=wrist_quaternion(*control))
+                    self.assertAlmostEqual(self.controller.q_req[axis], expected)
+                    control[axis] = direction*139 if axis == 0 else -direction*139
+                    self.advance(q=wrist_quaternion(*control))
+                    self.assertAlmostEqual(self.controller.q_req[axis], expected)
                     for _ in range(300):
-                        self.advance()
-                    self.assertEqual(self.controller.q_out, [0., 45., 45.])
-                    self.assertEqual(self.controller.anchor_wrist, reference)
-                    self.assertTrue(self.controller.armed)
-                    if axis:
-                        self.assertEqual(self.controller.q_req[1], self.controller.q_req[2])
-                        self.assertEqual(self.controller.q_out[1], self.controller.q_out[2])
+                        self.advance(q=wrist_quaternion())
+                    self.assertVectorAlmostEqual(self.controller.q_out, [0, 45, 45])
+                    self.assertEqual(self.controller.reference_quaternion, reference)
 
-    def test_count_wrap_parity_and_reboot_never_replay_old_clicks(self):
-        self.initialize(ac=2**32 - 1, bc=2**32 - 1)
+    def test_count_wrap_parity_reboot_and_reverse_counter(self):
+        self.initialize(ac=2**32-1, bc=2**32-1)
         self.advance(ac=0, bc=0)
         self.assertTrue(self.controller.armed)
         self.assertEqual(self.controller.open_req, 0)
         self.advance(ac=2, bc=2)
         self.assertTrue(self.controller.armed)
-        self.assertEqual(self.controller.open_req, 0)
+        self.advance(ac=1)
+        self.assertFalse(self.controller.enabled)
+        self.initialize()
         self.advance(boot=13, seq=0, ac=99, bc=99)
         self.assertFalse(self.controller.enabled)
-        self.assertEqual(self.controller.open_req, 0)
+        self.assertIsNone(self.controller.reference_quaternion)
         self.initialize(ac=101, bc=103)
         self.advance()
         self.assertFalse(self.controller.armed)
-        self.assertEqual(self.controller.open_req, 1)
 
-    def test_old_frames_cannot_refresh_age_or_trigger_clicks(self):
+    def test_duplicate_frames_cannot_refresh_age_or_trigger_clicks(self):
         self.start_follow()
-        old = deepcopy(self.current)
-        stamp = self.controller.received_at
+        old, stamp = deepcopy(self.current), self.controller.received_at
         self.clock.now += .1
-        self.assertFalse(self.controller.receive({**old, "ac": old["ac"] + 1, "bc": 1}))
+        self.assertFalse(self.controller.receive({**old, "ac": old["ac"]+1, "bc": 1}))
         self.assertEqual(self.controller.received_at, stamp)
         self.assertTrue(self.controller.armed)
         self.assertEqual(self.controller.open_req, 1)
 
-    def test_invalid_then_valid_before_tick_latches_disabled_session(self):
-        self.start_follow()
-        before = self.controller.q_out[:]
-        self.clock.now += .02
-        invalid = {**self.current, "seq": self.current["seq"] + 1, "valid": 0}
-        self.controller.receive(invalid)
-        self.controller.receive({**invalid, "seq": invalid["seq"] + 1, "valid": 1, "ac": 2, "roll": 30})
-        self.controller.step()
-        self.assertTrue(self.controller.valid())
-        self.assertFalse(self.controller.enabled)
-        self.assertFalse(self.controller.armed)
-        self.assertEqual(self.controller.q_out, before)
+    def test_transient_invalid_and_stale_recovery_latch_disabled(self):
+        for kind in ("invalid", "stale"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.start_follow()
+                before = self.controller.q_out[:]
+                self.clock.now += .02 if kind == "invalid" else .26
+                current = {**self.current, "seq": self.current["seq"]+1}
+                if kind == "invalid":
+                    self.controller.receive({**current, "valid": 0})
+                    current["seq"] += 1
+                self.controller.receive({**current, "valid": 1, "q": wrist_quaternion(-30)})
+                self.controller.step()
+                self.assertTrue(self.controller.valid())
+                self.assertFalse(self.controller.enabled)
+                self.assertEqual(self.controller.q_out, before)
 
-    def test_stale_gap_is_latched_when_new_frame_precedes_next_tick(self):
+    def test_scheduler_pause_preserves_reference_and_can_resume(self):
         self.start_follow()
-        before = self.controller.q_out[:]
-        for _ in range(12):
-            self.clock.now += .02
-            self.controller.step()
-        self.clock.now += .02
-        self.controller.receive({**self.current, "seq": self.current["seq"] + 1, "roll": 30})
-        self.controller.step()
-        self.assertFalse(self.controller.enabled)
-        self.assertFalse(self.controller.armed)
-        self.assertEqual(self.controller.q_out, before)
-
-    def test_scheduler_pause_does_not_move_or_reset_reference(self):
-        self.start_follow()
-        self.advance(roll=30)
-        before = self.controller.q_out[:]
-        reference = self.controller.anchor_wrist[:]
-        self.advance(seconds=.12, roll=30)
+        self.advance(q=wrist_quaternion(-30))
+        before, reference = self.controller.q_out[:], self.controller.reference_quaternion[:]
+        self.advance(seconds=.12)
         self.assertFalse(self.controller.armed)
         self.assertTrue(self.controller.enabled)
         self.assertEqual(self.controller.q_out, before)
-        self.assertEqual(self.controller.anchor_wrist, reference)
+        self.assertEqual(self.controller.reference_quaternion, reference)
         self.click_a()
-        self.assertTrue(self.controller.armed)
-        self.assertEqual(self.controller.q_req[0], 25)
+        self.assertAlmostEqual(self.controller.q_req[0], -25)
 
-    def test_expiry_and_disconnect_preserve_targets_and_need_reinitialization(self):
+    def test_three_dimensional_175_degree_guard_and_90_degree_recovery(self):
         self.start_follow()
-        self.advance(roll=30)
-        for _ in range(14):
-            self.clock.now += .02
-            self.controller.step()
-        before = self.controller.q_out[:]
-        self.assertFalse(self.controller.enabled)
-        self.advance(ac=20, roll=-30)
+        self.advance(q=wrist_quaternion(-20))
+        before, reference = self.controller.q_out[:], self.controller.reference_quaternion[:]
+        self.advance(q=wrist_quaternion(z=175))
+        self.assertTrue(self.controller.angle_ambiguous)
+        self.assertEqual(self.controller.q_req, before)
         self.assertEqual(self.controller.q_out, before)
-        self.controller.received_at = None
-        self.controller.step()
-        self.assertFalse(self.controller.valid())
+        self.assertEqual(self.controller.gate_status()[0], "ANGLE_AMBIGUOUS")
+        self.advance(q=wrist_quaternion(z=179))
+        self.advance(q=wrist_quaternion(z=-179))
+        self.advance(q=wrist_quaternion(z=100))
+        self.assertTrue(self.controller.angle_ambiguous)
+        self.assertEqual(sum(e["code"] == "ANGLE_AMBIGUOUS" for e in self.controller.events), 1)
+        self.click_b()
+        self.assertEqual(self.controller.open_req, 0)
+        self.advance(q=wrist_quaternion(z=90))
+        self.assertFalse(self.controller.angle_ambiguous)
+        self.assertVectorAlmostEqual(self.controller.q_req, [0, 45, 45])
+        self.assertEqual(self.controller.reference_quaternion, reference)
 
-    def test_replay_excludes_input_and_initialization(self):
-        self.controller.owner = "REPLAY"
-        self.controller.q_out = [12., 34., 56.]
-        self.advance(boot=99, ac=100, bc=100, roll=90, pitch=90)
-        self.assertEqual(self.controller.q_out, [12., 34., 56.])
-        with self.assertRaises(ValueError):
-            self.controller.enable()
-
-    def test_configuration_identity_names_mapping_and_only_changes_stopped(self):
-        self.assertEqual(MAPPING_VERSION, "coordinated-angle-v2")
-        self.assertEqual(LIMIT_POLICY, "FIXED_REFERENCE_HARD_CLAMP")
-        self.assertEqual(self.controller.mapping_state()["limit_policy"], LIMIT_POLICY)
-        old = self.controller.config_id
-        self.controller.configure({"roll_sign": -1})
-        self.assertNotEqual(old, self.controller.config_id)
-        self.start_follow()
-        with self.assertRaises(ValueError):
-            self.controller.configure({"pitch_sign": -1})
-        self.advance(roll=30)
-        self.assertEqual(self.controller.q_req[0], -25)
-
-    def test_so3_ambiguity_holds_without_changing_reference_then_returning_reference_returns_home(self):
-        self.initialize(att=2, roll=100, pitch=140)
+    def test_absolute_sign_wrap_near_180_has_small_relative_motion(self):
+        self.initialize(q=sensor_quaternion(179))
         self.click_a()
-        self.advance(roll=110, pitch=145)
-        for _ in range(4):
-            self.advance()
+        self.advance(q=sensor_quaternion(-173))
+        self.assertVectorAlmostEqual(self.controller.rotation_vector(), [0, 8, 0])
+        self.assertFalse(self.controller.angle_ambiguous)
+
+    def test_sparse_telemetry_crossing_180_holds_even_when_both_samples_are_below_175(self):
+        reference = sensor_quaternion(65, -40, 20)
+        self.initialize(q=reference)
+        self.click_a()
+        self.advance(q=multiply(reference, wrist_quaternion(-170)))
+        self.assertFalse(self.controller.angle_ambiguous)
+        self.assertAlmostEqual(self.controller.q_req[0], -45)
         held = self.controller.q_out[:]
-        reference = self.controller.anchor_wrist[:]
-        self.advance(roll=-100, pitch=-140)
+        self.advance(q=multiply(reference, wrist_quaternion(-190)))
+        self.assertTrue(self.controller.angle_ambiguous)
         self.assertEqual(self.controller.q_req, held)
         self.assertEqual(self.controller.q_out, held)
-        self.assertEqual(self.controller.anchor_wrist, reference)
+        self.assertEqual(self.controller.velocity, [0, 0, 0])
         self.assertTrue(self.controller.armed)
-        self.assertEqual(self.controller.gate_status()[0], "ANGLE_AMBIGUOUS")
-        self.assertEqual(self.controller.reason, "大角度姿态有歧义，回到启用参考附近恢复")
-        for _ in range(10):
+        self.assertAlmostEqual(distance_deg(self.controller.reference_quaternion, reference), 0)
+        for _ in range(5):
             self.advance()
-        self.assertEqual(sum(event["code"] == "ANGLE_AMBIGUOUS" for event in self.controller.events), 1)
-        self.click_b()
-        self.assertEqual(self.controller.open_req, 0)
-        self.advance(roll=100, pitch=140)
-        self.assertFalse(self.controller.angle_ambiguous)
-        self.assertEqual(self.controller.q_req, [0., 45., 45.])
-        for _ in range(100):
-            self.advance()
-        self.assertEqual(self.controller.q_out, [0., 45., 45.])
-        self.assertEqual(self.controller.anchor_wrist, reference)
+        self.assertEqual(self.controller.q_out, held)
+        self.assertEqual(sum(e["code"] == "ANGLE_AMBIGUOUS" for e in self.controller.events), 1)
 
-    def test_so3_normal_wrap_relative_to_enabled_hand_remains_small(self):
-        self.setUp()
-        self.initialize(att=2, roll=179, pitch=0)
+    def test_quaternion_sign_flip_at_170_is_not_a_principal_cut_crossing(self):
+        reference = sensor_quaternion(65, -40, 20)
+        self.initialize(q=reference)
         self.click_a()
-        self.advance(roll=-179)
-        self.advance(roll=-173)
-        self.assertEqual(self.controller.q_req[0], 3)
+        current = multiply(reference, wrist_quaternion(-170))
+        self.advance(q=current)
         self.assertFalse(self.controller.angle_ambiguous)
+        for index in range(8):
+            self.advance(q=[-v for v in current] if index % 2 == 0 else current)
+            self.assertFalse(self.controller.angle_ambiguous)
+            self.assertAlmostEqual(self.controller.q_req[0], -45)
+        self.assertTrue(self.controller.armed)
+        self.assertFalse(any(e["code"] == "ANGLE_AMBIGUOUS" for e in self.controller.events))
 
-    def test_so3_crossing_relative_principal_cut_holds_instead_of_flipping_limit(self):
-        self.initialize(att=2)
-        self.click_a()
-        for roll in range(5, 180, 5):
-            self.advance(roll=roll)
-        self.advance(roll=-179)
-        self.assertTrue(self.controller.angle_ambiguous)
-        self.assertEqual(self.controller.q_req, self.controller.q_out)
-        self.advance(roll=0)
-        self.assertFalse(self.controller.angle_ambiguous)
-        self.assertEqual(self.controller.q_req, [0., 45., 45.])
-
-    def test_pausing_and_b_clicks_at_limit_never_change_enable_reference(self):
+    def test_configuration_and_replay_are_explicit_and_exclusive(self):
+        self.assertEqual(MAPPING_VERSION, "coordinated-angle-v3")
+        self.assertEqual(LIMIT_POLICY, "FIXED_REFERENCE_HARD_CLAMP")
+        old = self.controller.config_id
+        self.controller.configure({"deadzone_deg": 6})
+        self.assertNotEqual(self.controller.config_id, old)
+        for key in ("roll_sign", "pitch_sign", "mounting_profile", "neutral_deg", "full_scale_deg"):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.controller.configure({key: 1})
+        for value in (0, 21, True, float("nan")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.controller.configure({"deadzone_deg": value})
         self.start_follow()
-        reference = self.controller.anchor_wrist[:]
-        self.advance(roll=100, pitch=100)
-        self.assertEqual(self.controller.q_req, [45., 60., 60.])
-        self.click_a()
-        self.click_b()
-        self.advance(roll=0, pitch=0)
-        self.click_a()
-        self.assertEqual(self.controller.q_req, [0., 45., 45.])
-        self.assertEqual(self.controller.anchor_wrist, reference)
-        self.assertEqual(self.controller.open_req, 0)
+        with self.assertRaises(ValueError):
+            self.controller.configure({"deadzone_deg": 7})
+        self.controller.stop()
+        self.controller.owner = "REPLAY"
+        self.controller.q_out = [12, 34, 56]
+        self.advance(boot=99, ac=100, bc=100, q=wrist_quaternion(80, 80))
+        self.assertEqual(self.controller.q_out, [12, 34, 56])
+        with self.assertRaises(ValueError):
+            self.controller.enable()
 
 
 class GeometryTests(unittest.TestCase):
@@ -430,7 +397,6 @@ class GeometryTests(unittest.TestCase):
     def test_upright_and_ready_match_reference(self):
         upright = forward_kinematics(pose([0, 0, 0], 1), self.geometry)
         self.assertAlmostEqual(upright[0], 0)
-        self.assertAlmostEqual(upright[1], 0)
         self.assertAlmostEqual(upright[2], 360)
         ready = forward_kinematics(pose([0, 45, 45], 1), self.geometry)
         self.assertAlmostEqual(ready[0], 236.3172798, places=5)

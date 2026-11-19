@@ -7,7 +7,7 @@ import ArmScene from './ArmScene.vue'
 import TelemetryChart from './TelemetryChart.vue'
 import { fallbackGeometry, poseAt, referencePose } from './geometry'
 import { nextAccelerationWarning } from './displayStability'
-import { coordinatedFollowLabel, hasButtonClickCounters } from './controlPresentation'
+import { coordinatedFollowLabel } from './controlPresentation'
 import type { Geometry, Point, Preflight, Recording, RecordingDetail, SimulationConfig } from './types'
 
 const device = useDevice(), route = useRoute(), router = useRouter()
@@ -20,11 +20,11 @@ const ghost = ref(false), axes = ref(false), dimensions = ref(false)
 const chartType = ref<'imu' | 'joints'>('imu'), paused = ref(false), frozen = ref<Point[]>([])
 const recordings = ref<Recording[]>([]), detail = ref<RecordingDetail | null>(null)
 const recordName = ref(''), preview = ref(false), cursor = ref(0), preflight = ref<Preflight | null>(null)
-const defaultConfig: SimulationConfig = { deadzone_deg: 5, full_scale_deg: 30, limits_deg: [[-45, 45], [0, 60], [0, 60]], max_velocity_deg_s: [20, 15, 15], max_acceleration_deg_s2: [60, 60, 60], roll_sign: 1, pitch_sign: 1, neutral_deg: [0, 0] }
+const defaultConfig: SimulationConfig = { deadzone_deg: 5, limits_deg: [[-45, 45], [0, 60], [0, 60]], max_velocity_deg_s: [20, 15, 15], max_acceleration_deg_s2: [60, 60, 60] }
 const form = ref<SimulationConfig>(structuredClone(defaultConfig))
 const axisLabels = ['底座', '大臂', '小臂']
 const axisKeys = ['base_yaw_deg', 'shoulder_down_deg', 'elbow_down_deg'] as const
-const statusLabels: Record<string, string> = { disconnected: '未连接', connecting: '连接中', calibrating: '静置校准中', valid: '数据有效', stale: '数据已过期', invalid: '数据无效' }
+const statusLabels: Record<string, string> = { disconnected: '未连接', connecting: '连接中', calibrating: '静置校准中', valid: '数据有效', stale: '数据已过期', invalid: '数据无效', incompatible: '固件协议不兼容' }
 const reasonLabels: Record<string, string> = {
   DATA_STALE: 'IMU 数据已过期，实时目标已保持',
   INPUT_DISCONNECTED: '请连接真实腕端 IMU',
@@ -34,12 +34,11 @@ const reasonLabels: Record<string, string> = {
 }
 const inputStatus = computed(() => !device.fresh ? 'offline' : state.value?.input.status ?? 'disconnected')
 const inputLabel = computed(() => inputStatus.value === 'offline' ? '服务未连接' : statusLabels[inputStatus.value] ?? inputStatus.value)
-const buttonsFresh = computed(() => device.fresh && state.value?.input.age_ms != null && state.value.input.age_ms < 250)
+const buttonsFresh = computed(() => device.fresh && ['valid', 'invalid', 'calibrating'].includes(inputStatus.value) &&
+  state.value?.input.age_ms != null && state.value.input.age_ms < 250)
 const relativeMapping = computed(() => state.value?.control.mapping === 'COORDINATED_RELATIVE_ANGLE')
-const clickCountersReady = computed(() => hasButtonClickCounters(state.value?.buttons))
 const runLabel = computed(() => device.fresh ? coordinatedFollowLabel(!!state.value?.control.enabled, !!state.value?.control.armed) : '等待有效遥测')
 const history = computed(() => preview.value || !!state.value?.replay.active)
-const handBackMount = computed(() => !history.value && device.model?.config.mounting_profile === 'hand_back_x_right_y_forearm_z_down')
 const historicalFrames = computed(() => detail.value?.metadata?.executor === 'virtual' &&
   detail.value.metadata.angle_convention === 'base_yaw_shoulder_down_elbow_relative_down_gripper_open_ratio_v1'
   ? detail.value.frames.filter((f) => isPose(f.output_target) && isPose(f.requested)) : [])
@@ -57,6 +56,8 @@ const chartPoints = computed<Point[]>(() => preview.value ? historicalFrames.val
   const point: Point = { time: f.t_ms, roll: f.imu?.roll_deg ?? null, pitch: f.imu?.pitch_deg ?? null, requested: f.requested, output: f.output_target }
   return index && f.t_ms - all[index - 1]!.t_ms > 250 ? [{ time: f.t_ms - 1, roll: null, pitch: null, requested: null, output: null }, point] : [point]
 }) : paused.value ? frozen.value : device.points)
+const chartLabel = computed(() => preview.value ? '历史记录' : paused.value ? '已暂停查看' : chartType.value === 'imu'
+  ? device.realReady ? '实时腕端' : '无有效实时输入' : state.value?.replay.active ? '历史目标回放' : device.fresh ? '实时目标' : '历史接收值')
 const canStop = computed(() => device.fresh && (!!state.value?.control.enabled || !!state.value?.replay.active || !!state.value?.recording.active))
 const canRecord = computed(() => device.realReady && state.value?.control.enabled && !state.value.replay.active && !preview.value)
 const configLocked = computed(() => !device.fresh || !!state.value?.control.enabled || !!state.value?.replay.active || !!state.value?.recording.active)
@@ -72,13 +73,14 @@ const diagnosticWarning = ref(false)
 watch(() => [state.value?.imu.norm_g, buttonsFresh.value] as const, ([norm, fresh]) => {
   diagnosticWarning.value = nextAccelerationWarning(diagnosticWarning.value, norm, fresh)
 }, { immediate: true })
-const neutral = computed(() => state.value?.imu.neutral_deg ?? device.model?.config.neutral_deg ?? [0, 0])
+const referenceQuaternion = computed(() => state.value?.control.follow.reference_quaternion)
+const readoutLabel = computed(() => !state.value?.input.frames ? '尚无输入' : !device.realReady ? '历史值 · 当前不可用于控制' : !referenceQuaternion.value ? '未初始化 · 相对角待建立' : '相对本次启用参考')
 const blockers = computed(() => state.value?.control.blockers ?? [])
-const gateLabels: Record<string, string> = { REPLAY: '历史回放中', INPUT_INVALID: '等待有效输入', DISABLED: '请启用并回初始', ACTIVE: '跟随中 · 短按 A 暂停', RUNNING: '跟随中 · 短按 A 暂停', PAUSED: '已暂停 · 短按 A 继续', READY: '已暂停 · 短按 A 开始', BUTTON_PROTOCOL_REQUIRED: '需要按钮计数固件', ANGLE_AMBIGUOUS: '大角度有歧义 · 靠近启用参考' }
+const gateLabels: Record<string, string> = { REPLAY: '历史回放中', INPUT_INVALID: '等待有效输入', DISABLED: '请启用并回初始', ACTIVE: '跟随中 · 短按 A 暂停', READY: '已暂停 · 短按 A 开始', PROTOCOL_INCOMPATIBLE: '请升级腕端四元数固件', ANGLE_AMBIGUOUS: '大角度有歧义 · 靠近启用参考' }
 const gateLabel = computed(() => !device.fresh ? '等待本地服务' : gateLabels[state.value?.control.gate_status ?? ''] ?? runLabel.value)
-const canInitialize = computed(() => device.realReady && relativeMapping.value && clickCountersReady.value && !state.value?.buttons.a && !state.value?.buttons.b &&
-  !state.value?.control.armed && !state.value?.replay.active && !state.value?.recording.active && !preview.value)
+const canInitialize = computed(() => device.fresh && !!state.value?.control.can_enable && !history.value)
 const fmt = (n: number | null | undefined, digits = 1) => typeof n === 'number' && Number.isFinite(n) ? n.toFixed(digits) : '—'
+const vectorLabel = (values: number[] | null | undefined, digits = 3) => values ? values.map((n) => fmt(n, digits)).join(' / ') : '—'
 const date = (n: number) => new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 const statusName = (s: string) => ({ completed: '已完成', interrupted: '已中断', recording: '录制中', invalid: '不可回放' })[s] ?? s
 async function act(work: () => Promise<void>, success = '') {
@@ -154,7 +156,7 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
         <RouterLink to="/recordings"><span>◷</span>录制与回放<small>02</small></RouterLink>
         <RouterLink to="/settings"><span>⚙</span>仿真设置<small>03</small></RouterLink>
       </nav>
-      <div class="sidebar-foot"><span class="connected-line"><i class="status-dot" :class="{ good: device.fresh }"></i>{{ device.fresh ? '本地服务已连接' : '等待本地服务' }}</span><small>FastAPI · Vue 3 · Three.js</small><p>真实传感输入<br>虚拟执行与估算预览</p><span class="build-label">VIRTUAL CONTROL / V2</span></div>
+      <div class="sidebar-foot"><span class="connected-line"><i class="status-dot" :class="{ good: device.fresh }"></i>{{ device.fresh ? '本地服务已连接' : '等待本地服务' }}</span><small>FastAPI · Vue 3 · Three.js</small><p>真实传感输入<br>虚拟执行与估算预览</p><span class="build-label">VIRTUAL CONTROL / V3</span></div>
     </aside>
     <div class="main-layout">
       <header class="topbar">
@@ -165,22 +167,38 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
         <div class="page-heading"><div><span class="eyebrow">MOTIONARM / {{ settings ? 'SIMULATION PROFILE' : library ? 'MOTION ARCHIVE' : 'LIVE TELEMETRY' }}</span><h1>{{ settings ? '仿真参数' : library ? '动作记录与回放' : '机械臂三维控制台' }}<span v-if="history" class="history-pill">历史回放</span></h1><p>{{ settings ? '独立仿真配置，不作为实体机械臂的安全标定。' : '从真实手腕姿态到虚拟关节目标，观察每一次动作。' }}</p></div><span class="session-indicator"><i class="status-dot" :class="{ good: device.realReady, warning: inputStatus === 'stale' }"></i>{{ inputLabel }}<small>{{ state?.input.port || 'USB / 未选择端口' }}</small></span></div>
         <div v-if="device.incompatible" class="notice danger" role="alert">{{ device.incompatible }} <b>本界面实时控制已锁定。</b></div>
         <div v-if="!device.fresh && !device.incompatible" class="notice warning" role="status">遥测服务{{ device.connection === 'connecting' ? '连接中' : '已断开或过期' }}，实时入口已锁定。请检查本机 FastAPI 服务。</div>
+        <div v-if="device.model?.warning" class="notice warning" role="status">{{ device.model.warning }}</div>
         <div v-if="error" class="notice danger" role="alert">{{ error }}<button aria-label="关闭错误提示" @click="error = ''">×</button></div>
         <div v-if="message" class="notice success" role="status">{{ message }}<button aria-label="关闭提示" @click="message = ''">×</button></div>
 
         <template v-if="!settings">
           <div class="workspace-grid">
             <section class="panel input-panel">
-              <div class="panel-heading"><h2>腕端输入</h2><span class="tiny-tag">USB SERIAL</span></div>
+              <div class="panel-heading"><h2>实时腕端输入</h2><span class="tiny-tag">USB SERIAL</span></div>
               <div class="port-picker"><label for="port">设备端口</label><div><select id="port" v-model="port" :disabled="busy || !!state?.control.enabled || !!state?.replay.active"><option value="">选择串口</option><option v-for="p in ports" :key="p.device" :value="p.device">{{ p.device }} · {{ p.description }}</option></select><button class="icon-button" :disabled="busy" aria-label="刷新串口" @click="act(refreshPorts)">↻</button></div><div class="connect-row"><button class="button secondary" :disabled="busy || !device.fresh || !port || !!state?.control.enabled || !!state?.replay.active" @click="connect">连接腕端</button><button class="text-button" :disabled="busy || !device.fresh || !state?.input.port" @click="disconnect">断开</button></div></div>
               <div class="sensor-state"><i class="status-dot" :class="{ good: device.realReady, warning: inputStatus === 'calibrating' || inputStatus === 'stale' }"></i><strong>{{ inputLabel }}</strong><span>{{ state?.imu.age_ms == null ? '—' : state.imu.age_ms + ' ms' }}</span></div>
               <div v-if="inputStatus === 'calibrating'" class="calibration-progress"><progress :value="state?.imu.calibration_samples ?? 0" max="250"></progress><small>请静置并松开 A / B · {{ state?.imu.calibration_samples ?? 0 }} / 250</small></div>
-              <div class="orientation-readout"><div><span>ROLL <small>{{ handBackMount ? '侧倾 / 底座' : '启用参考 / 底座' }}</small></span><strong>{{ fmt(state?.imu.roll_deg) }}<em>°</em></strong><div class="angle-track"><i :style="{ left: Math.max(0, Math.min(100, 50 + (state?.imu.roll_deg ?? 0) / 60 * 100)) + '%' }"></i></div></div><div><span>PITCH <small>{{ handBackMount ? '抬手 / 双臂' : '大小臂同向协同' }}</small></span><strong>{{ fmt(state?.imu.pitch_deg) }}<em>°</em></strong><div class="angle-track"><i :style="{ left: Math.max(0, Math.min(100, 50 + (state?.imu.pitch_deg ?? 0) / 60 * 100)) + '%' }"></i></div></div></div>
+              <p class="readout-status" :class="{ amber: !device.realReady && !!state?.input.frames }">{{ readoutLabel }}</p>
+              <div class="orientation-readout" :class="{ historic: !device.realReady }"><div><span>ROLL <small>侧倾 / 底座</small></span><strong>{{ fmt(state?.imu.roll_deg) }}<em>°</em></strong><div class="angle-track"><i :style="{ left: Math.max(0, Math.min(100, 50 + (state?.imu.roll_deg ?? 0) / 60 * 100)) + '%' }"></i></div></div><div><span>PITCH <small>抬手 / 双臂</small></span><strong>{{ fmt(state?.imu.pitch_deg) }}<em>°</em></strong><div class="angle-track"><i :style="{ left: Math.max(0, Math.min(100, 50 + (state?.imu.pitch_deg ?? 0) / 60 * 100)) + '%' }"></i></div></div></div>
               <div class="button-readouts"><div :class="{ pressed: buttonsFresh && state?.buttons.a }"><kbd>A</kbd><span>A · GPIO25 · 短按开始/暂停<small>{{ buttonsFresh ? state?.buttons.a ? '已按下' : '已释放' : '不可用' }}</small></span><i class="status-dot" :class="{ good: buttonsFresh && state?.buttons.a }"></i></div><div :class="{ pressed: buttonsFresh && state?.buttons.b }"><kbd>B</kbd><span>B · GPIO26 · 短按夹爪开合<small>{{ buttonsFresh ? state?.buttons.b ? '已按下' : '已释放' : '不可用' }}</small></span><i class="status-dot" :class="{ good: buttonsFresh && state?.buttons.b }"></i></div></div>
               <div class="toggle-state" :class="{ running: device.fresh && state?.control.enabled && state?.control.armed }"><strong>{{ runLabel }}</strong><small>A 短按切换运行状态，松手不暂停。</small></div>
               <div class="mode-strip"><span>PITCH 同向协同</span><strong>大臂 + 小臂 · 1 : 1</strong></div>
-              <div class="mapping-guide"><strong>{{ history ? '历史目标回放' : relativeMapping ? '大小臂协同跟随' : '等待协同跟随模式' }}<span>1 : 1</span></strong><p v-if="handBackMount">手背安装：X→右，Y→肘，Z→下。右倾底座顺时针，抬手双臂抬起。</p><p v-else>Roll 控制底座，Pitch 同向控制大小臂。手势参考仅在启用时捕获；固定倾角会停稳。</p></div>
+              <div class="mapping-guide"><strong>{{ history ? '历史目标回放' : relativeMapping ? '大小臂协同跟随' : '等待协同跟随模式' }}<span>1 : 1</span></strong><p>{{ history ? '按录制关节目标回放；下方腕端诊断仍属于独立的当前输入。' : '固定手背安装：芯片正面向下，X→右，Y→肘，Z→下。右倾底座顺时针，抬手双臂抬起。' }}</p></div>
               <dl class="mini-diagnostics"><div><dt>WHO_AM_I</dt><dd>{{ state?.imu.who == null ? '—' : '0x' + state.imu.who.toString(16).toUpperCase() }}</dd></div><div><dt>温度</dt><dd>{{ fmt(state?.imu.temp_c) }} °C</dd></div><div><dt>加速度模长</dt><dd :class="{ amber: diagnosticWarning }">{{ fmt(state?.imu.norm_g, 3) }} g</dd></div><div><dt>I²C 错误</dt><dd>{{ state?.imu.errors ?? '—' }}</dd></div></dl>
+              <details class="attitude-diagnostics">
+                <summary>完整姿态与三轴诊断 <span>{{ device.realReady ? '当前输入' : '历史接收值' }}</span></summary>
+                <p>四元数顺序 w / x / y / z；角速度、加速度按传感器 X / Y / Z 原轴。旋转向量按手腕指尖 / 右侧 / 下方坐标。</p>
+                <dl>
+                  <div><dt>当前四元数 · 传感器→世界</dt><dd>{{ vectorLabel(state?.imu.quaternion, 6) }}</dd></div>
+                  <div><dt>参考四元数 · 当前会话</dt><dd>{{ vectorLabel(referenceQuaternion, 6) }}</dd></div>
+                  <div><dt>相对旋转向量 · °</dt><dd>{{ vectorLabel(state?.control.follow.delta_rotation_vector_deg, 2) }}</dd></div>
+                  <div><dt>角速度 · °/s · 已扣零偏</dt><dd>{{ vectorLabel(state?.imu.gyro_dps, 2) }}</dd></div>
+                  <div><dt>加速度 · g · 原始量</dt><dd>{{ vectorLabel(state?.imu.accel_g, 3) }}</dd></div>
+                  <div><dt>陀螺量程 · °/s</dt><dd>±{{ fmt(state?.imu.gyro_range_dps, 0) }}</dd></div>
+                  <div><dt>拒绝原因 / 样本数</dt><dd>{{ state?.imu.reject_reason ?? '—' }} / {{ state?.imu.rejected_samples ?? '—' }}</dd></div>
+                </dl>
+                <p>Z 旋转仅作诊断，不直接驱动底座。MPU6050 无绝对航向，航向仍会漂移；不测量手部平移。</p>
+              </details>
               <p class="inline-warning diagnostic-warning-slot" :class="{ active: diagnosticWarning }" :aria-hidden="!diagnosticWarning">加速度模长偏离 1g，连接正常不代表测量精度已验证。</p><p v-if="state?.input.detail" class="input-detail">{{ state.input.detail }}</p>
             </section>
 
@@ -200,14 +218,14 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
               <div class="control-state"><span>控制权</span><strong :class="{ cyan: state?.control.owner !== 'NONE' }">{{ owner }}</strong><small>{{ runLabel }}</small></div>
               <div class="neutral-guide" role="status">
                 <div class="gate-heading"><strong>{{ gateLabel }}</strong><span>A 短按切换</span></div>
-                <p class="follow-anchor-hint">参考只在启用时捕获；A 仅切换开始/暂停。</p>
+                <p class="follow-anchor-hint">{{ history ? '此处为实时腕端参考；历史模型只使用录制目标。' : '参考只在启用时捕获；A 仅切换开始/暂停。' }}</p>
                 <div class="neutral-angle-label"><span>相对启用参考</span><b>R {{ fmt(state?.imu.roll_deg) }}° / P {{ fmt(state?.imu.pitch_deg) }}°</b></div>
-                <div class="neutral-angle-label"><span>传感原量 X/Y</span><b>X {{ fmt(state?.imu.raw_roll_deg) }}° / Y {{ fmt(state?.imu.raw_pitch_deg) }}°</b></div>
-                <div class="neutral-angle-label"><span>传感启用参考</span><b>X {{ fmt(neutral[0]) }}° / Y {{ fmt(neutral[1]) }}°</b></div>
+                <div class="neutral-angle-label"><span>会话参考</span><b>{{ referenceQuaternion ? '四元数已捕获' : '尚未初始化' }}</b></div>
+                <div class="neutral-angle-label"><span>关节映射符号</span><b>底座 +1 / 双臂 −1</b></div>
                 <ul class="gate-blockers"><li v-for="blocker in blockers.slice(0, 2)" :key="blocker">{{ blocker }}</li></ul>
               </div>
               <button class="button primary full-width prepare-button" :disabled="busy || !canInitialize" @click="initialize">启用并回初始<span>↗</span></button>
-              <p class="prepare-hint">松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。<span v-if="device.realReady && !clickCountersReady">需要支持按钮点击计数的腕端固件。</span></p>
+              <p class="prepare-hint">松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。</p>
               <button class="button secondary full-width reset-button" :disabled="busy || configLocked || preview" @click="reset">复位至 45° 启动目标</button>
               <p class="control-hint">{{ reason }}</p>
               <p class="follow-limit-hint" :class="{ active: !history && state?.joint_state.limits.some(Boolean) }">超出范围已截住；退回有效角区继续跟随，回到启用手势回初始。</p>
@@ -216,7 +234,7 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
           </div>
 
           <div class="lower-grid">
-            <section class="panel telemetry-panel"><div class="panel-heading"><h2>信号与目标曲线<span class="live-pill">{{ preview ? '历史' : paused ? '已暂停查看' : 'LIVE' }}</span></h2><div class="segmented"><button :class="{ active: chartType === 'imu' }" @click="chartType = 'imu'">IMU 姿态</button><button :class="{ active: chartType === 'joints' }" @click="chartType = 'joints'">关节目标</button><button v-if="!preview" :aria-pressed="paused" @click="toggleChart">{{ paused ? '继续' : '暂停' }}</button></div></div><TelemetryChart :points="chartPoints" :type="chartType" :live="!preview" /></section>
+            <section class="panel telemetry-panel"><div class="panel-heading"><h2>信号与目标曲线<span class="live-pill" :class="{ inactive: !preview && (paused || (chartType === 'imu' ? !device.realReady : !device.fresh)) }">{{ chartLabel }}</span></h2><div class="segmented"><button :class="{ active: chartType === 'imu' }" @click="chartType = 'imu'">IMU 姿态</button><button :class="{ active: chartType === 'joints' }" @click="chartType = 'joints'">关节目标</button><button v-if="!preview" :aria-pressed="paused" @click="toggleChart">{{ paused ? '继续' : '暂停' }}</button></div></div><TelemetryChart :points="chartPoints" :type="chartType" :live="!preview" /></section>
             <section class="panel activity-panel"><div class="panel-heading"><h2>事件记录</h2><span class="tiny-tag">{{ state?.events.length ?? 0 }} EVENTS</span></div><ul class="event-list"><li v-for="(event, i) in (state?.events ?? []).slice(-5).reverse()" :key="event.time_ms + '-' + i"><time>{{ new Date(event.time_ms).toLocaleTimeString('zh-CN', { hour12: false }) }}</time><span>{{ event.message }}</span></li><li v-if="!state?.events.length" class="empty-events">连接腕端后，事件将在这里显示。</li></ul><div class="transport-stats"><span>接收 <b>{{ state?.input.frames ?? 0 }}</b></span><span>解析丢弃 <b>{{ state?.input.parse_errors ?? 0 }}</b></span><span>USB 目标 <b>25 Hz</b></span></div></section>
           </div>
 
@@ -226,7 +244,7 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
         </template>
 
         <template v-else>
-          <div class="settings-grid"><section class="panel settings-panel"><div class="panel-heading"><div><h2>运动与输入参数</h2><p>停止控制后可编辑，保存后需要重新启用。</p></div><span class="tiny-tag">仿真参数</span></div><form @submit.prevent="saveConfig"><fieldset :disabled="configLocked || busy"><div class="settings-fields"><label>角度软死区 <span><input v-model.number="form.deadzone_deg" type="number" min="0" max="20" step="0.5" required> °</span></label><div class="mapping-reference"><span>大小臂同向协同</span><strong>1 : 1</strong><small>输出目标保留限速和加速度约束。</small></div><label>Roll 方向<select v-model.number="form.roll_sign"><option :value="1">正向 +1</option><option :value="-1">反向 −1</option></select></label><label>Pitch 协同方向<select v-model.number="form.pitch_sign"><option :value="1">正向 +1</option><option :value="-1">反向 −1</option></select></label></div><div class="settings-axis" v-for="(name, i) in axisLabels" :key="name"><strong>{{ name }}</strong><label>最小角 °<input v-model.number="form.limits_deg[i]![0]" type="number" :min="i === 0 ? -90 : 0" :max="i === 0 ? 89 : 89" step="1" required></label><label>最大角 °<input v-model.number="form.limits_deg[i]![1]" type="number" min="1" max="90" step="1" required></label><label>速度 °/s<input v-model.number="form.max_velocity_deg_s[i]" type="number" min="1" max="90" step="1" required></label><label>加速度 °/s²<input v-model.number="form.max_acceleration_deg_s2[i]" type="number" min="1" max="360" step="1" required></label></div><div class="settings-footer"><button type="submit" class="button primary">保存仿真参数</button><span>{{ configLocked ? '请先停止控制和录制' : '仅影响虚拟执行端' }}</span></div></fieldset></form></section><section class="panel model-reference"><div class="panel-heading"><h2>装配与手势参考</h2></div><div class="reference-glyph">⊥</div><h3>竖直零姿态</h3><p>大臂与小臂均竖直，底座偏航 0°。模型定义与 45° 启动目标分开保存。</p><dl><div v-for="(value, key) in device.model?.geometry ?? fallbackGeometry" :key="key"><dt>{{ ({ base_width: '底板宽', table_to_shoulder_axis: '肩轴高度', shoulder_to_elbow_axis: '肩肘轴距', elbow_to_gripper_mount: '肘至安装面', gripper_mount_to_tip: '安装面至爪尖' })[key] }}</dt><dd>{{ value }} mm</dd></div></dl><div class="neutral-reference"><span>传感器启用参考（X/Y）</span><strong>X {{ fmt(device.model?.config.neutral_deg[0]) }}° / Y {{ fmt(device.model?.config.neutral_deg[1]) }}°</strong><small>手势参考只在“启用并回初始”时捕获；A 仅切换开始/暂停，不重新设参考。</small></div></section></div><section class="panel profile-info"><span class="eyebrow">PROFILE IDENTITY</span><p><strong>仿真配置</strong><code>{{ device.model?.config_id ?? '等待配置' }}</code></p><p><strong>几何基线</strong><code>{{ device.model?.baseline_id ?? '等待配置' }}</code></p><p><strong>真实轴角</strong><span>未配备外部位置反馈 · measured = null</span></p></section>
+          <div class="settings-grid"><section class="panel settings-panel"><div class="panel-heading"><div><h2>运动与输入参数</h2><p>停止控制后可编辑，保存后需要重新启用。</p></div><span class="tiny-tag">仿真参数</span></div><form @submit.prevent="saveConfig"><fieldset :disabled="configLocked || busy"><div class="settings-fields"><label>角度软死区 <span><input v-model.number="form.deadzone_deg" type="number" min="0.5" max="20" step="0.5" required> °</span></label><div class="mapping-reference"><span>大小臂同向协同</span><strong>1 : 1</strong><small>输出目标保留限速和加速度约束。</small></div><div class="fixed-mounting"><span>固定手背安装</span><strong>X 向右 · Y 指向手肘 · Z 向下</strong><small>芯片正面向下。控制坐标：Roll = −Y，Pitch = +X；关节映射符号：底座 +1、双臂 −1。</small></div></div><div class="settings-axis" v-for="(name, i) in axisLabels" :key="name"><strong>{{ name }}</strong><label>最小角 °<input v-model.number="form.limits_deg[i]![0]" type="number" :min="i === 0 ? -90 : 0" :max="i === 0 ? 89 : 89" step="1" required></label><label>最大角 °<input v-model.number="form.limits_deg[i]![1]" type="number" min="1" max="90" step="1" required></label><label>速度 °/s<input v-model.number="form.max_velocity_deg_s[i]" type="number" min="1" max="90" step="1" required></label><label>加速度 °/s²<input v-model.number="form.max_acceleration_deg_s2[i]" type="number" min="1" max="360" step="1" required></label></div><div class="settings-footer"><button type="submit" class="button primary">保存仿真参数</button><span>{{ configLocked ? '请先停止控制和录制' : '仅影响虚拟执行端' }}</span></div></fieldset></form></section><section class="panel model-reference"><div class="panel-heading"><h2>装配与手势参考</h2></div><div class="reference-glyph">⊥</div><h3>竖直零姿态</h3><p>大臂与小臂均竖直，底座偏航 0°。模型定义与 45° 启动目标分开保存。</p><dl><div v-for="(value, key) in device.model?.geometry ?? fallbackGeometry" :key="key"><dt>{{ ({ base_width: '底板宽', table_to_shoulder_axis: '肩轴高度', shoulder_to_elbow_axis: '肩肘轴距', elbow_to_gripper_mount: '肘至安装面', gripper_mount_to_tip: '安装面至爪尖' })[key] }}</dt><dd>{{ value }} mm</dd></div></dl><div class="neutral-reference"><span>当前会话参考四元数（w / x / y / z）</span><strong>{{ vectorLabel(referenceQuaternion, 4) }}</strong><small>只在“启用并回初始”时捕获，不写入配置、不跨重启恢复；A 仅切换开始/暂停。</small></div></section></div><section class="panel profile-info"><span class="eyebrow">PROFILE IDENTITY</span><p><strong>仿真配置</strong><code>{{ device.model?.config_id ?? '等待配置' }}</code></p><p><strong>几何基线</strong><code>{{ device.model?.baseline_id ?? '等待配置' }}</code></p><p><strong>真实轴角</strong><span>未配备外部位置反馈 · measured = null</span></p></section>
         </template>
         <footer class="page-footer"><span>MotionArm Lab <i>/</i> 虚拟关节目标／估算预览</span><span>仿真参数不代表实机安全标定</span></footer>
       </main>

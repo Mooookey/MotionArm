@@ -3,10 +3,7 @@ import asyncio
 from bisect import bisect_right
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
-import csv
-import io
 import json
-import math
 import os
 from pathlib import Path
 import time
@@ -17,13 +14,15 @@ from fastapi.responses import JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from .recordings import Recordings
+from .recording_export import recording_csv
 from .protocol import finite_number
-from .virtual import DEFAULT_CONFIG, LIMIT_POLICY, MAPPING_VERSION, POSE_KEYS, VirtualController, forward_kinematics, pose
-from .wearable import WearableReader
+from .virtual import DEFAULT_CONFIG, LIMIT_POLICY, MAPPING_VERSION, MOUNTING, POSE_KEYS, VirtualController, forward_kinematics, pose
+from .wearable import ATTITUDE_REPRESENTATION, FirmwareIncompatible, WearableReader, validate_frame
 
 ROOT = Path(__file__).resolve().parents[2]
 CONVENTION = "base_yaw_shoulder_down_elbow_relative_down_gripper_open_ratio_v1"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
+REMOVED_CONFIG_FIELDS = {"full_scale_deg", "mounting_profile", "roll_sign", "pitch_sign", "neutral_deg"}
 
 
 def error(message, code="VIRTUAL_CONTROL_REJECTED", status=409):
@@ -41,9 +40,15 @@ class VirtualRuntime:
         self.config_path = Path(config_path or ROOT / "data" / "virtual-config.json")
         config = None
         self.config_warning = None
+        migrated = False
         if self.config_path.exists():
             try:
                 config = json.loads(self.config_path.read_text(encoding="utf-8"))
+                if isinstance(config, dict) and set(config) & REMOVED_CONFIG_FIELDS:
+                    if set(config) - set(DEFAULT_CONFIG) - REMOVED_CONFIG_FIELDS:
+                        raise ValueError("未知配置字段")
+                    config = {key: value for key, value in config.items() if key not in REMOVED_CONFIG_FIELDS}
+                    migrated = True
             except (OSError, ValueError):
                 self.config_warning = "仿真配置无法读取，已加载默认参数"
         try:
@@ -51,6 +56,10 @@ class VirtualRuntime:
         except (ValueError, TypeError):
             self.controller = VirtualController(clock)
             self.config_warning = "仿真配置无效，已加载默认参数"
+            migrated = False
+        if migrated:
+            self.save_config()
+            self.config_warning = "旧仿真配置已收缩，安装方向已固定；请重新初始化四元数参考"
         self.records = Recordings(database)
         self.baseline = json.loads((ROOT / "config" / "robot_baseline.json").read_text(encoding="utf-8"))
         self.reader = None
@@ -58,7 +67,7 @@ class VirtualRuntime:
         self.link = "disconnected"
         self.detail = None
         self.frames = self.parse_errors = 0
-        self.last_sample = self.started = clock()
+        self.started = clock()
         self.next_sample = self.started
         self.record_seq = 0
         self.replay = {"active": False, "record_id": None, "progress": 0.}
@@ -69,7 +78,16 @@ class VirtualRuntime:
         self.tokens = {}
         self.lock = asyncio.Lock()
         self.last_recording = None
-        self.event_index = 0
+        self.recorded_events = set()
+
+    def save_config(self):
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.config_path.with_suffix(".tmp")
+        try:
+            temporary.write_text(json.dumps(self.controller.config, indent=2, allow_nan=False), encoding="utf-8")
+            temporary.replace(self.config_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @property
     def geometry(self):
@@ -84,28 +102,36 @@ class VirtualRuntime:
     def receive(self, message):
         c = self.controller
         if message["type"] == "frame":
-            frame = message["frame"]
+            try:
+                frame = validate_frame(message["frame"])
+            except FirmwareIncompatible as exc:
+                self.receive({"type": "incompatible", "detail": str(exc)})
+                return
+            was_valid = c.valid()
+            restart = c.frame is not None and frame["boot"] != c.frame["boot"]
+            if not c.receive(frame):
+                return
             # Preserve even sub-tick failures in the recording provenance.
-            if self.records.active and (not c.valid() or not frame["valid"] or frame["who"] != 104
-                    or frame["cal"] != 250 or frame["age_ms"] >= 250
-                    or any(type(frame.get(key)) is not int for key in ("ac", "bc"))):
+            if self.records.active and (not was_valid or not c.valid()):
                 self.interrupt_record("IMU 无效或数据过期")
-            if c.frame and frame["boot"] != c.frame["boot"]:
+            if restart:
                 self.interrupt_record("腕端重启")
-            if c.receive(frame):
-                self.frames += 1
-                self.link = "connected"
-                self.detail = None
+            self.frames += 1
+            self.link = "connected"
+            self.detail = None
             self.parse_errors = message.get("parse_errors", self.parse_errors)
         elif message["type"] == "connecting":
-            self.link = "connecting"
+            if self.link != "incompatible":
+                self.link = "connecting"
         else:
-            self.link = "disconnected"
+            self.link = "incompatible" if message["type"] == "incompatible" else "disconnected"
             self.detail = message.get("detail")
-            self.interrupt_record("串口断开")
+            self.parse_errors = message.get("parse_errors", self.parse_errors)
+            self.interrupt_record(self.detail or "串口断开")
             if c.owner != "REPLAY":
-                c.stop("串口断开，目标保持")
+                c.stop(self.detail or "串口断开，目标保持")
             c.received_at = None
+            c.settled_samples.clear()
 
     async def connect(self, port):
         import re
@@ -129,7 +155,7 @@ class VirtualRuntime:
     def input_status(self):
         c = self.controller
         if self.link != "connected":
-            return "connecting" if self.link == "connecting" else "disconnected"
+            return self.link
         age = c.age_ms()
         if age is None or age >= 250:
             return "stale"
@@ -139,8 +165,7 @@ class VirtualRuntime:
 
     def config_snapshot(self):
         return {"config": deepcopy(self.controller.config), "config_id": self.controller.config_id,
-                "mounting_profile": self.controller.config["mounting_profile"],
-                "mounting": self.controller.mounting_state(),
+                "mounting": deepcopy(MOUNTING),
                 "geometry": deepcopy(self.geometry), "baseline_id": self.baseline["baseline_id"],
                 "warning": self.config_warning}
 
@@ -149,52 +174,58 @@ class VirtualRuntime:
                 "controller_version": MAPPING_VERSION, "mapping": "COORDINATED_RELATIVE_ANGLE",
                 "limit_policy": LIMIT_POLICY,
                 "button_semantics": "ac_toggle_follow_bc_toggle_gripper_v1", "pitch_weights": [1., 1.],
-                "attitude_representation": "relative_rotation_vector_v2" if self.controller.frame and
-                    self.controller.frame.get("att") == 2 else "legacy_roll_pitch_v1",
-                "gyro_range_dps": self.controller.frame.get("gr", 500) if self.controller.frame else None,
-                "angle_convention": CONVENTION, "schema_version": 2,
+                "attitude_representation": ATTITUDE_REPRESENTATION,
+                "reference_quaternion": deepcopy(self.controller.reference_quaternion),
+                "gyro_range_dps": self.controller.frame["gr"] if self.controller.frame else None,
+                "angle_convention": CONVENTION, "schema_version": 3,
                 "label": "虚拟关节目标／估算预览", "measured": None}
+
+    def enable_blockers(self):
+        if self.controller.owner == "REPLAY" or self.controller.armed:
+            return self.controller.enable_blockers()
+        if self.records.active:
+            return ["请先结束录制，再启用并回初始"]
+        if self.input_status() != "valid":
+            return [self.detail or "需要新鲜、有效且完成校准的 IMU 数据"]
+        return self.controller.enable_blockers()
 
     def snapshot(self):
         c, status = self.controller, self.input_status()
         f = c.frame or {}
         valid = status == "valid"
         state = "REPLAY" if self.replay["active"] else "TELEOP" if c.armed else "HOLD" if c.enabled else "READY"
-        roll, pitch = c.angles() if f else (None, None)
+        roll, pitch = c.angles()
         age = c.age_ms()
-        gate_status, blockers, neutral_progress = c.gate_status()
+        gate_status, blockers = c.gate_status()
+        enable_blockers = self.enable_blockers()
+        if status == "incompatible":
+            gate_status, blockers = "PROTOCOL_INCOMPATIBLE", enable_blockers
+        elif self.records.active or not c.enabled:
+            blockers = enable_blockers or blockers
         return {
-            "schema_version": 2, "event": "telemetry", "server_time_ms": int(time.time() * 1000),
+            "schema_version": 3, "event": "telemetry", "server_time_ms": int(time.time() * 1000),
             "source": "wearable", "read_only": False,
             "input": {"kind": "imu_usb", "status": status, "port": self.port, "boot_id": f.get("boot"),
-                      "attitude_representation": "relative_rotation_vector_v2" if f.get("att") == 2 else "legacy_roll_pitch_v1",
+                      "attitude_representation": ATTITUDE_REPRESENTATION,
                       "age_ms": age, "frames": self.frames, "parse_errors": self.parse_errors, "detail": self.detail},
             "executor": {"kind": "virtual", "label": "虚拟执行端"},
             "imu": {"roll_deg": roll, "pitch_deg": pitch, "valid": valid, "age_ms": age,
-                    "mounting_profile": c.config["mounting_profile"], "mounting": c.mounting_state(),
-                    "raw_sensor_x_deg": f.get("roll"), "raw_sensor_y_deg": f.get("pitch"),
-                    "sensor_reference_axes": ["sensor_x_rotation_deg", "sensor_y_rotation_deg"],
-                    "sensor_reference_deg": c.config["neutral_deg"][:],
-                    "raw_roll_deg": f.get("roll"), "raw_pitch_deg": f.get("pitch"),
-                    "neutral_deg": c.config["neutral_deg"][:],
+                    "quaternion": f.get("q"), "gyro_dps": f.get("gyro_dps"), "accel_g": f.get("accel_g"),
                     "calibration_samples": f.get("cal", 0), "who": f.get("who"),
                     "norm_g": f.get("norm_g"), "temp_c": f.get("temp_c"), "errors": f.get("errors", 0),
-                    "gyro_range_dps": f.get("gr", 500), "reject_reason": f.get("rej", 0),
+                    "gyro_range_dps": f.get("gr"), "reject_reason": f.get("rej", 0),
                     "rejected_samples": f.get("rc", 0)},
             "buttons": {"a": bool(f.get("a")) if age is not None and age < 250 else False,
                         "b": bool(f.get("b")) if age is not None and age < 250 else False,
-                        "ac": f.get("ac"), "bc": f.get("bc"),
-                        "short": f.get("short", 0), "long": f.get("long", 0)},
+                        "ac": f.get("ac"), "bc": f.get("bc")},
             "control": {"state": state, "owner": c.owner, "enabled": c.enabled, "armed": c.armed,
                         "mapping": "COORDINATED_RELATIVE_ANGLE",
                         "limit_policy": LIMIT_POLICY,
                         "follow": c.mapping_state(),
-                        "can_enable": valid and c.click_firmware_ready() and not c.armed
-                                      and c.owner != "REPLAY" and not self.records.active,
+                        "can_enable": not enable_blockers,
                         "reason": c.reason,
                         "gate_status": gate_status, "blockers": blockers,
-                        "neutral_ready": c.neutral_ready, "neutral_progress": neutral_progress,
-                        "mode": "COUPLED", "fault": None if valid else status},
+                        "fault": None if valid else status},
             "joint_state": {**c.joint_state(), "tip_mm": forward_kinematics(pose(c.q_out, c.open_out), self.geometry)},
             "recording": {"active": self.records.active is not None, "record_id": self.records.active,
                           "frames": self.records.frames},
@@ -209,7 +240,7 @@ class VirtualRuntime:
             error("录制需要已启用的真实 IMU 控制")
         self.next_sample = self.clock()
         return self.records.start(name, "wearable", str(c.frame["boot"]), c.config_id,
-                                  "virtual", "wearable-usb-click-att2" if c.frame.get("att") == 2 else "wearable-usb-click-v1", metadata=self.metadata())
+                                  "virtual", "wearable-usb-click-att3", metadata=self.metadata())
 
     def load_record(self, identifier):
         if not isinstance(identifier, str) or not 1 <= len(identifier) <= 128:
@@ -278,16 +309,15 @@ class VirtualRuntime:
                     "seq": self.record_seq, "pc_received_ns": time.monotonic_ns(),
                     "requested": c.joint_state()["requested"], "output_target": c.joint_state()["output_target"],
                     "imu": state["imu"], "buttons": state["buttons"], "owner": c.owner,
-                    "mode": state["control"]["mode"], "imu_seq": c.frame["seq"], "device_ms": c.frame["ms"],
+                    "follow": state["control"]["follow"], "imu_seq": c.frame["seq"], "device_ms": c.frame["ms"],
                 })
-                self.last_sample = now
                 self.next_sample += .04
                 if self.next_sample <= now:
                     self.next_sample = now + .04
         # Persist meaningful controller events using backend elapsed time.
         for item in c.events:
             marker = (item["time_ms"], item["code"], item["message"])
-            if marker not in getattr(self, "recorded_events", set()):
+            if marker not in self.recorded_events:
                 self.records.note_event({**item, "t_ms": round((now - self.started) * 1000)})
         self.recorded_events = {(e["time_ms"], e["code"], e["message"]) for e in c.events}
 
@@ -380,26 +410,17 @@ def create_virtual_app(db_path=None, config_path=None):
         changes = {key: value for key, value in body.items() if key != "request_id"}
         rt().controller.configure(changes)
         rt().interrupt_record("仿真配置变化")
-        rt().config_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = rt().config_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(rt().controller.config, indent=2), encoding="utf-8")
-        temporary.replace(rt().config_path)
+        rt().save_config()
         rt().tokens.clear()
         return rt().config_snapshot()
 
     @app.post("/api/virtual/enable")
-    @app.post("/api/virtual/prepare")
-    async def prepare():
+    async def enable():
         runtime, c = rt(), rt().controller
-        if c.owner == "REPLAY" or runtime.records.active or c.armed:
-            error("请先暂停跟随、结束录制或停止历史回放，再启用并回初始")
-        # Both entry points are the same explicit initialization operation.
-        # A clicks never recapture this reference or reset the virtual model.
+        blockers = runtime.enable_blockers()
+        if blockers:
+            error("；".join(blockers))
         c.enable()
-        runtime.config_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = runtime.config_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(c.config, indent=2), encoding="utf-8")
-        temporary.replace(runtime.config_path)
         runtime.tokens.clear()
         return {"ok": True, **runtime.config_snapshot()}
 
@@ -417,13 +438,6 @@ def create_virtual_app(db_path=None, config_path=None):
     async def reset():
         rt().controller.reset()
         return {"ok": True}
-
-    @app.post("/api/virtual/neutral")
-    async def neutral():
-        c = rt().controller
-        if not c.valid() or c.frame["a"] or c.frame["b"]:
-            error("中立归零需要 IMU 有效且松开两个按钮，请静置腕端")
-        return await configure({"neutral_deg": [c.frame["roll"], c.frame["pitch"]]})
 
     @app.get("/api/recordings")
     async def recordings():
@@ -454,21 +468,7 @@ def create_virtual_app(db_path=None, config_path=None):
             return JSONResponse(data, headers=headers)
         if format != "csv":
             error("请选择 csv 或 json", status=422)
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["t_ms", "source", "executor", "angle_convention",
-                         *[f"requested_{key}" for key in (*POSE_KEYS, "gripper_open_ratio")],
-                         *[f"output_{key}" for key in (*POSE_KEYS, "gripper_open_ratio")],
-                         "roll_deg", "pitch_deg", "a", "b", "ac", "bc", "short", "long", "mode", "owner", "legacy_payload"])
-        for frame in data["frames"]:
-            metadata = data.get("metadata") or {}
-            imu, buttons = frame.get("imu", {}), frame.get("buttons", {})
-            writer.writerow([frame["t_ms"], data["source"], metadata.get("executor"), metadata.get("angle_convention"),
-                *[frame.get("requested", {}).get(key) for key in (*POSE_KEYS, "gripper_open_ratio")],
-                *[frame.get("output_target", {}).get(key) for key in (*POSE_KEYS, "gripper_open_ratio")],
-                imu.get("roll_deg"), imu.get("pitch_deg"), *[buttons.get(k) for k in ("a", "b", "ac", "bc", "short", "long")],
-                frame.get("mode"), frame.get("owner"), json.dumps(frame, ensure_ascii=False) if not metadata else ""])
-        return Response("\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8", headers=headers)
+        return Response(recording_csv(data), media_type="text/csv; charset=utf-8", headers=headers)
 
     @app.post("/api/replays/preflight")
     async def preflight(body: dict = Body(...)):

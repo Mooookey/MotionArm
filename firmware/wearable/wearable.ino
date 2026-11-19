@@ -3,14 +3,12 @@
 #include <esp_random.h>
 #include "OrientationFilter.h"
 #include "DebouncedButton.h"
+#include "WearableTelemetry.h"
 
 constexpr uint8_t kImuAddress = 0x68;
 constexpr uint32_t kPeriodUs = 10000;
 constexpr uint16_t kCalibrationSamples = 250;
-constexpr uint32_t kLongPressMs = 700;
 constexpr uint32_t kTelemetryPeriodMs = 40;
-constexpr size_t kTelemetryMaxBytes = 384;
-constexpr uint16_t kGyroRangeDps = 2000;
 constexpr float kGyroCountsPerDps = 16.4f;
 constexpr int32_t kGyroSaturationRaw = 32700;
 
@@ -24,10 +22,7 @@ Rejection rejection = Rejection::None;
 
 StationaryRecovery recovery;
 
-DebouncedButton deadman{25}, gripperButton{26};
-bool havePress = false;
-uint32_t pressedAt = 0, shortEvents = 0, longEvents = 0;
-constexpr unsigned mode = 0;  // Legacy protocol field; B no longer selects an arm.
+DebouncedButton followButton{25}, gripperButton{26};
 uint8_t who = 0;
 bool configured = false, valid = false, calibrated = false;
 uint32_t errors = 0, rejected = 0, lastSample = 0;
@@ -36,9 +31,9 @@ bool haveSample = false;
 uint16_t samples = 0;
 float sum[3] = {}, bias[3] = {};
 float gyroMin[3] = {}, gyroMax[3] = {}, latestGyro[3] = {};
-float firstAccel[3] = {}, accelNorm = 0;
+float firstAccel[3] = {}, latestAccel[3] = {}, accelNorm = 0;
 float gravitySum = 0, gravityReference = 1;
-float roll = 0, pitch = 0, temperature = 0;
+float temperature = 0;
 OrientationFilter attitude;
 uint32_t bootId = 0, telemetrySequence = 0;
 
@@ -75,10 +70,6 @@ void zeroSamples() {
   for (float &value : sum) value = 0;
 }
 
-float wrapDegrees(float angle) {
-  return remainderf(angle, 360.0f);
-}
-
 void updateImu(uint32_t now) {
   uint32_t elapsed = now - lastSample;
   if (elapsed < kPeriodUs) return;
@@ -100,8 +91,11 @@ void updateImu(uint32_t now) {
   const float ax = word(raw) / 8192.0f;
   const float ay = word(raw + 2) / 8192.0f;
   const float az = word(raw + 4) / 8192.0f;
+  latestAccel[0] = ax;
+  latestAccel[1] = ay;
+  latestAccel[2] = az;
   temperature = word(raw + 6) / 340.0f + 36.53f;
-  // AFS_SEL=3: +/-2000 deg/s,16.4 counts/(deg/s). Check saturation in raw
+  // FS_SEL=3: +/-2000 deg/s,16.4 counts/(deg/s). Check saturation in raw
   // counts so clipped samples remain invalid instead of appearing as real tilt.
   const int16_t gyroRaw[] = {word(raw + 8), word(raw + 10), word(raw + 12)};
   const float gyro[] = {gyroRaw[0] / kGyroCountsPerDps, gyroRaw[1] / kGyroCountsPerDps,
@@ -112,7 +106,8 @@ void updateImu(uint32_t now) {
   if (!calibrated) {
     const float accel[] = {ax, ay, az};
     bool still = elapsed <= 50000 && norm >= 0.3f && norm <= 2.0f &&
-                 !deadman.stable && !gripperButton.stable;
+                 followButton.primed && gripperButton.primed &&
+                 !followButton.stable && !gripperButton.stable;
     for (size_t i = 0; i < 3; ++i) {
       if (samples == 0) {
         gyroMin[i] = gyroMax[i] = gyro[i];
@@ -139,7 +134,6 @@ void updateImu(uint32_t now) {
       zeroSamples();
       return;
     }
-    attitude.relativeTilt(roll, pitch);
     calibrated = valid = true;
     rejection = Rejection::None;
     return;
@@ -156,8 +150,8 @@ void updateImu(uint32_t now) {
     return;
   }
   const float accel[] = {ax, ay, az};
-  const bool released = deadman.primed && gripperButton.primed &&
-                        !deadman.stable && !gripperButton.stable;
+  const bool released = followButton.primed && gripperButton.primed &&
+                        !followButton.stable && !gripperButton.stable;
   const bool settled = recovery.update(accel, gyro, bias, norm, elapsed, released);
   if (settled) {
     // Refresh the filter reference even while valid. Raw norm may change with
@@ -168,7 +162,6 @@ void updateImu(uint32_t now) {
   if (!valid) {
     if (settled) {
       if (attitude.alignGravity(ax, ay, az)) {
-        attitude.relativeTilt(roll, pitch);
         valid = true;
         rejection = Rejection::None;
       } else {
@@ -187,36 +180,24 @@ void updateImu(uint32_t now) {
     recovery.reset();
     return;
   }
-  attitude.relativeTilt(roll, pitch);
   valid = true;
   rejection = Rejection::None;
 }
 
 void updateButtons(uint32_t now) {
-  deadman.update(now, digitalRead(deadman.pin) == LOW);
-  if (!gripperButton.update(now, digitalRead(gripperButton.pin) == LOW)) return;
-  if (gripperButton.stable) {
-    pressedAt = now;
-    havePress = true;
-  } else if (havePress) {
-    havePress = false;
-    if (now - pressedAt >= kLongPressMs) {
-      ++longEvents;
-    } else {
-      ++shortEvents;
-    }
-  }
+  followButton.update(now, digitalRead(followButton.pin) == LOW);
+  gripperButton.update(now, digitalRead(gripperButton.pin) == LOW);
 }
 
 void setup() {
   Serial.setTxBufferSize(1024);
   Serial.begin(115200);
-  pinMode(deadman.pin, INPUT);
+  pinMode(followButton.pin, INPUT);
   pinMode(gripperButton.pin, INPUT);
   bootId = esp_random();
   if (!bootId) bootId = 1;
   // USB-only firmware: no WiFi or ESP-NOW transmitter is started.
-  Serial.println("role=wearable transport=usb protocol=1 orientation=rotvec_v2 gyro_range_dps=2000 buttons=press_toggle_v1");
+  Serial.println("role=wearable transport=usb protocol=1 orientation=quaternion_v3 gyro_range_dps=2000 buttons=press_toggle_v1");
   Wire.begin(21, 22, 100000);
   Wire.setTimeOut(20);
   configured = configureImu();
@@ -246,21 +227,14 @@ void loop() {
   // Queue a whole bounded frame only when it fits; the IMU loop never waits
   // for UART transmission. This is the only runtime UART producer.
   char frame[kTelemetryMaxBytes + 1];
-  const int length = snprintf(frame, sizeof(frame),
-      "{\"v\":1,\"att\":2,\"role\":\"wearable\",\"boot\":%lu,\"seq\":%lu,\"ms\":%lu,"
-      "\"age_ms\":%lu,\"who\":%u,\"valid\":%u,\"cal\":%u,"
-      "\"roll\":%.2f,\"pitch\":%.2f,\"a\":%u,\"b\":%u,\"mode\":%u,"
-      "\"short\":%lu,\"long\":%lu,\"norm_g\":%.3f,\"temp_c\":%.2f,"
-      "\"errors\":%lu,\"rej\":%u,\"gr\":%u,\"rc\":%lu,\"ac\":%lu,\"bc\":%lu}\n",
-      (unsigned long)bootId, (unsigned long)++telemetrySequence, (unsigned long)now,
-      (unsigned long)ageMs, unsigned(who), unsigned(fresh), unsigned(samples),
-      wrapDegrees(roll), wrapDegrees(pitch),
-      unsigned(deadman.primed && deadman.stable),
-      unsigned(gripperButton.primed && gripperButton.stable), mode,
-      (unsigned long)shortEvents, (unsigned long)longEvents, accelNorm, temperature,
-      (unsigned long)errors, unsigned(rejection), unsigned(kGyroRangeDps),
-      (unsigned long)rejected, (unsigned long)deadman.presses,
-      (unsigned long)gripperButton.presses);
+  const WearableTelemetry telemetry{
+      bootId, ++telemetrySequence, now, ageMs, who, fresh, samples, attitude.quaternion(),
+      {latestGyro[0] - bias[0], latestGyro[1] - bias[1], latestGyro[2] - bias[2]},
+      {latestAccel[0], latestAccel[1], latestAccel[2]},
+      followButton.primed && followButton.stable, gripperButton.primed && gripperButton.stable,
+      followButton.presses, gripperButton.presses, accelNorm, temperature, errors,
+      uint8_t(rejection), rejected};
+  const int length = serializeWearable(frame, sizeof(frame), telemetry);
   if (length <= 0 || size_t(length) > kTelemetryMaxBytes ||
       Serial.availableForWrite() < length) return;
   Serial.write(reinterpret_cast<const uint8_t *>(frame), size_t(length));

@@ -50,14 +50,12 @@ class OrientationFilter {
 
   bool initialize(float ax, float ay, float az) {
     q_ = {1, 0, 0, 0};
-    if (!alignGravity(ax, ay, az)) return false;
-    neutral_ = q_;
-    return true;
+    return alignGravity(ax, ay, az);
   }
 
   // Reacquire tilt after an invalid interval using the smallest correction,
-  // preserving the boot-neutral quaternion and as much relative heading as the
-  // six-axis measurement permits. No gyro bias or raw sensor scale is changed.
+  // preserving as much heading as the six-axis measurement permits. The host
+  // owns the session reference; no gyro bias or raw sensor scale is changed.
   bool alignGravity(float ax, float ay, float az) {
     if (!unitVector(ax, ay, az)) return false;
     float px, py, pz;
@@ -106,24 +104,6 @@ class OrientationFilter {
     return true;
   }
 
-  // Relative rotation-vector components about the boot-neutral X/Y axes.
-  // Unlike Euler pitch, these do not fold at +/-90 degrees. The SO(3) shortest
-  // arc has a +/-180 degree branch cut; a controller must clutch/reanchor there.
-  void relativeTilt(float &rollDeg, float &pitchDeg) const {
-    Quaternion relative = multiply({neutral_.w, -neutral_.x, -neutral_.y, -neutral_.z}, q_);
-    if (relative.w < 0) {
-      relative.w = -relative.w;
-      relative.x = -relative.x;
-      relative.y = -relative.y;
-      relative.z = -relative.z;
-    }
-    const float n = std::sqrt(relative.x * relative.x + relative.y * relative.y + relative.z * relative.z);
-    const float scale = n > 1e-6f ? 2 * std::atan2(n, relative.w) / n : 2;
-    constexpr float degrees = 57.29577951308232f;
-    rollDeg = relative.x * scale * degrees;
-    pitchDeg = relative.y * scale * degrees;
-  }
-
   void gravity(float &x, float &y, float &z) const {
     x = 2 * (q_.x * q_.z - q_.w * q_.y);
     y = 2 * (q_.y * q_.z + q_.w * q_.x);
@@ -133,7 +113,7 @@ class OrientationFilter {
   const Quaternion &quaternion() const { return q_; }
 
  private:
-  Quaternion q_{1, 0, 0, 0}, neutral_{1, 0, 0, 0};
+  Quaternion q_{1, 0, 0, 0};
 
   static Quaternion multiply(const Quaternion &a, const Quaternion &b) {
     return {a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z,

@@ -1,4 +1,4 @@
-> 当前本机实现与下午交接以 [Wearable_Handoff.md](Wearable_Handoff.md) 为准；以下原设计规格保留。实际串口为115200、ESP-NOW为信道6，最新串口演示与正式无线固件是不同入口。
+> 当前腕端 USB／虚拟控制台使用 [Attitude V3 协议与操作说明](16_Virtual_Console.md)：v:1、att:3、完整四元数、384字节，Web schema_version=3。以下为保留的实体／ESP-NOW原设计规格，不适用于当前腕端USB固件。
 
 # 03｜通信协议 v1：ESP-NOW、USB Serial、REST 与 WebSocket
 

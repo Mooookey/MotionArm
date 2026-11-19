@@ -1,23 +1,10 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { request } from './api'
-import type { ModelConfig, Point, Pose, Telemetry } from './types'
+import type { ModelConfig, Point, Telemetry } from './types'
+import { validFrame, validModelConfig } from './telemetry'
+export { isPose } from './telemetry'
 
-const poseKeys = ['base_yaw_deg', 'shoulder_down_deg', 'elbow_down_deg', 'gripper_open_ratio'] as const
-export function isPose(value: unknown): value is Pose {
-  return typeof value === 'object' && value !== null && poseKeys.every((key) =>
-    typeof (value as Pose)[key] === 'number' && Number.isFinite((value as Pose)[key]))
-}
-function validFrame(value: unknown): value is Telemetry {
-  if (typeof value !== 'object' || !value) return false
-  const t = value as Telemetry
-  return t.schema_version === 2 && t.source === 'wearable' && Number.isFinite(t.server_time_ms) &&
-    typeof t.input?.status === 'string' && t.executor?.kind === 'virtual' &&
-    typeof t.imu?.valid === 'boolean' && typeof t.buttons?.a === 'boolean' &&
-    typeof t.control?.enabled === 'boolean' && isPose(t.joint_state?.requested) &&
-    isPose(t.joint_state?.output_target) && t.joint_state.measured === null &&
-    typeof t.recording?.active === 'boolean' && typeof t.replay?.active === 'boolean' && Array.isArray(t.events)
-}
 export const useDevice = defineStore('device', () => {
   const snapshot = shallowRef<Telemetry | null>(null)
   const model = shallowRef<ModelConfig | null>(null)
@@ -35,6 +22,7 @@ export const useDevice = defineStore('device', () => {
   async function loadConfig() {
     if (configRequest) return configRequest
     configRequest = request<ModelConfig>('/api/virtual/config').then((value) => {
+      if (!validModelConfig(value)) throw new Error('后端仿真配置格式不兼容，请同步更新服务。')
       model.value = value
       retryConfigAt = 0
     }).catch((error) => {
@@ -46,7 +34,10 @@ export const useDevice = defineStore('device', () => {
   function accept(value: unknown) {
     if (!validFrame(value)) {
       if (typeof value === 'object' && value !== null && 'source' in value) {
-        incompatible.value = '当前后端输入为 ' + String((value as { source: unknown }).source) + '。请使用 wearable 模式启动服务。'
+        const source = (value as { source: unknown }).source
+        incompatible.value = source === 'wearable'
+          ? '后端遥测格式不兼容，需要三维姿态 V3 服务。请同步更新前后端。'
+          : '当前后端输入为 ' + String(source) + '。请使用 wearable 模式启动服务。'
       }
       return
     }

@@ -6,23 +6,26 @@ import math
 import time
 
 from .protocol import newer, finite_number
+from .attitude import distance_deg, mean, relative, wrist_rotation_vector
+from .wearable import validate_frame
 
 POSE_KEYS = ("base_yaw_deg", "shoulder_down_deg", "elbow_down_deg")
-MAPPING_VERSION = "coordinated-angle-v2"
+MAPPING_VERSION = "coordinated-angle-v3"
 LIMIT_POLICY = "FIXED_REFERENCE_HARD_CLAMP"
-MOUNTING_PROFILES = {
-    "sensor_xy": {"label": "传感器 X/Y 原轴", "control_from_sensor": {"Roll": "+X", "Pitch": "+Y"}},
-    "hand_back_x_right_y_forearm_z_down": {
-        "label": "手背安装：X 向右、Y 沿前臂、Z 向下",
-        "control_from_sensor": {"Roll": "-Y", "Pitch": "+X"}},
+# Verified on the worn wrist: right tilt produces negative control Roll.
+# Base yaw is positive counterclockwise; Pitch retains the downward joint sign.
+JOINT_SIGNS = (1, -1)
+MOUNTING = {
+    "profile": "hand_back_x_right_y_forearm_z_down",
+    "label": "芯片正面向下；X 向右、Y 从手背指向手肘、Z 向下",
+    "control_from_sensor": {"Roll": "-Y", "Pitch": "+X", "Z": "+Z"},
+    "joint_signs": list(JOINT_SIGNS),
 }
 DEFAULT_CONFIG = {
-    "deadzone_deg": 5.0, "full_scale_deg": 30.0,
+    "deadzone_deg": 5.0,
     "limits_deg": [[-45.0, 45.0], [0.0, 60.0], [0.0, 60.0]],
     "max_velocity_deg_s": [20.0, 15.0, 15.0],
     "max_acceleration_deg_s2": [60.0, 60.0, 60.0],
-    "roll_sign": 1, "pitch_sign": 1, "neutral_deg": [0.0, 0.0],
-    "mounting_profile": "sensor_xy",
 }
 
 
@@ -42,16 +45,12 @@ def forward_kinematics(target, geometry):
 
 
 def validate_config(config):
-    config = {"mounting_profile": "sensor_xy", **config}
-    if set(config) != set(DEFAULT_CONFIG):
+    if not isinstance(config, dict) or set(config) != set(DEFAULT_CONFIG):
         raise ValueError("未知或缺少仿真参数")
-    if not isinstance(config["mounting_profile"], str) or config["mounting_profile"] not in MOUNTING_PROFILES:
-        raise ValueError("无效的传感器安装方向配置")
     def number(value):
         return finite_number(value)
-    if not all(number(config[k]) for k in ("deadzone_deg", "full_scale_deg")) or not (
-            0 < config["deadzone_deg"] < config["full_scale_deg"] <= 90):
-        raise ValueError("死区应大于 0 且小于满速角（≤90°）")
+    if not number(config["deadzone_deg"]) or not 0 < config["deadzone_deg"] <= 20:
+        raise ValueError("死区应大于 0 且不超过 20°")
     for key in ("max_velocity_deg_s", "max_acceleration_deg_s2"):
         values = config[key]
         if not isinstance(values, list) or len(values) != 3 or not all(number(x) and 0 < x <= 360 for x in values):
@@ -63,21 +62,13 @@ def validate_config(config):
         raise ValueError("无效的仿真限位")
     if any(not lo <= start <= hi for (lo, hi), start in zip(limits, (0, 45, 45))):
         raise ValueError("仿真限位必须包含启动姿态 0/45/45°")
-    if any(type(config[k]) is not int or config[k] not in (-1, 1) for k in ("roll_sign", "pitch_sign")):
-        raise ValueError("方向只能为 +1 或 −1")
-    zero = config["neutral_deg"]
-    if not isinstance(zero, list) or len(zero) != 2 or not all(number(x) and abs(x) <= 180 for x in zero):
-        raise ValueError("无效中立角")
 
 
 class VirtualController:
     """One initialized wrist reference, click-to-run and coordinated arm targets."""
     def __init__(self, clock=time.monotonic, config=None):
         self.clock = clock
-        self.config = deepcopy(config or DEFAULT_CONFIG)
-        if not isinstance(self.config, dict):
-            raise ValueError("无效的仿真配置对象")
-        self.config.setdefault("mounting_profile", "sensor_xy")
+        self.config = deepcopy(DEFAULT_CONFIG if config is None else config)
         validate_config(self.config)
         self.q_req = [0., 45., 45.]
         self.q_out = self.q_req[:]
@@ -89,19 +80,16 @@ class VirtualController:
         self.enabled = self.armed = False
         self.owner = "NONE"
         self.reason = "连接腕端并启用、回到虚拟初始姿态"
-        self.neutral_since = None
-        self.neutral_ready = False
         self.events = []
         self.settled_samples = []
-        self.anchor_q = [0., 45., 45.]
-        self.anchor_wrist = self.last_wrist = None
-        self.wrist_delta = [0., 0.]
+        self.reference_quaternion = None
         self.angle_ambiguous = False
         self.click_baseline = None
 
     @property
     def config_id(self):
-        identity = {"mapping": MAPPING_VERSION, "limit_policy": LIMIT_POLICY, "config": self.config}
+        identity = {"mapping": MAPPING_VERSION, "mounting": MOUNTING,
+                    "limit_policy": LIMIT_POLICY, "config": self.config}
         return "virtual:" + sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
 
     def event(self, code, message):
@@ -118,43 +106,31 @@ class VirtualController:
         return bool(self.frame and self.frame["who"] == 104 and self.frame["cal"] == 250
                     and self.frame["valid"] and age is not None and age < 250)
 
-    def click_firmware_ready(self):
-        return bool(self.frame is not None and all(type(self.frame.get(key)) is int
-                    and 0 <= self.frame[key] <= 0xFFFFFFFF for key in ("ac", "bc")))
-
     def angles(self):
-        if not self.frame:
-            return [0., 0.]
-        return self._control_angles(self.config["neutral_deg"])
+        vector = self.rotation_vector()
+        return vector[:2] if vector is not None else [None, None]
 
-    def _control_angles(self, sensor_reference):
-        x, y = [math.remainder(self.frame[key] - zero, 360)
-                for key, zero in zip(("roll", "pitch"), sensor_reference)]
-        return [-y, x] if self.config["mounting_profile"] == "hand_back_x_right_y_forearm_z_down" else [x, y]
-
-    def mounting_state(self):
-        profile = self.config["mounting_profile"]
-        return {"profile": profile, **deepcopy(MOUNTING_PROFILES[profile]),
-                "sensor_reference_axes": ["sensor_x_rotation_deg", "sensor_y_rotation_deg"],
-                "sensor_reference_deg": self.config["neutral_deg"][:]}
+    def rotation_vector(self):
+        if self.frame is None or self.reference_quaternion is None:
+            return None
+        return wrist_rotation_vector(self.reference_quaternion, self.frame["q"])
 
     def hold(self, reason, disable=False):
         self.q_req = self.q_out[:]
         self.velocity = [0., 0., 0.]
         self.armed = False
-        self.neutral_since = None
-        self.neutral_ready = self.enabled and not disable
         self.reason = reason
         # The virtual gripper is independent of A, fault and stop. Its logical
         # open/closed target persists; disabled sessions freeze its output too.
         if disable:
             self.enabled = False
             self.owner = "NONE"
-            self.neutral_ready = False
             self.click_baseline = None
             self.angle_ambiguous = False
+            self.reference_quaternion = None
 
     def receive(self, frame, now=None):
+        frame = validate_frame(frame)
         now = self.clock() if now is None else now
         old = self.frame
         if old and frame["boot"] == old["boot"] and not newer(frame["seq"], old["seq"]):
@@ -170,19 +146,16 @@ class VirtualController:
         if restart and self.owner != "REPLAY":
             self.hold("腕端已连接／重启，请重新初始化", disable=True)
         # Stable, released data is required only for explicit initialization.
-        if restart or input_lost or frame["a"] or frame["b"]:
+        if (restart or input_lost or frame["a"] or frame["b"] or math.hypot(*frame["gyro_dps"]) >= 5
+                or self.received_at is not None and now - self.received_at > .1 + 1e-9):
             self.settled_samples.clear()
-        else:
-            self.settled_samples.append((now, frame["roll"], frame["pitch"]))
+        if not input_lost and not frame["a"] and not frame["b"] and math.hypot(*frame["gyro_dps"]) < 5:
+            self.settled_samples.append((now, frame["q"]))
             self.settled_samples = [sample for sample in self.settled_samples if now - sample[0] <= .8]
         self.frame, self.received_at = frame.copy(), now
         if self.owner == "REPLAY" or not self.enabled or restart or input_lost:
             return True
-        if not self.click_firmware_ready():
-            self.hold("腕端固件需更新：缺少 A/B 点击计数 ac/bc", disable=True)
-            return True
-        if not self._track_wrist(old):
-            return True
+        self._track_wrist(old)
         deltas = {key: (frame[key] - self.click_baseline[key]) % 2**32 for key in ("ac", "bc")}
         self.click_baseline = {key: frame[key] for key in ("ac", "bc")}
         if any(delta >= 2**31 for delta in deltas.values()):
@@ -197,7 +170,6 @@ class VirtualController:
                 self.event("PAUSE", "A 点击，暂停姿态跟随")
             else:
                 self.armed = True
-                self.neutral_ready = False
                 self.reason = "协同角度跟随中；点击 A 暂停，点击 B 开合夹爪"
                 self.event("RUN", "A 点击，按初始化姿态参考继续跟随")
         if self.angle_ambiguous:
@@ -207,28 +179,24 @@ class VirtualController:
         return True
 
     def _track_wrist(self, old):
-        angles = self.angles()
-        relative = self._control_angles(self.anchor_wrist)
-        increments = [math.remainder(new - previous, 360) for new, previous in zip(angles, self.last_wrist)]
-        interval = (self.frame["ms"] - old["ms"]) % 2**32
-        near_reference = all(abs(value) < 90 for value in relative)
-        principal_cut = any(abs(new - previous) > 180 for new, previous in zip(relative, self.wrist_delta))
-        discontinuity = interval <= 100 and (math.hypot(*increments) > 60 or principal_cut)
-        if self.frame.get("att") == 2 and discontinuity and not near_reference and not self.angle_ambiguous:
+        angle = distance_deg(self.reference_quaternion, self.frame["q"])
+        previous = relative(self.reference_quaternion, old["q"])
+        current = relative(self.reference_quaternion, self.frame["q"])
+        # Telemetry can step over the entire 175..185 degree guard band.
+        # Align signs first: q/-q is representation noise, not a branch crossing.
+        if sum(a*b for a, b in zip(previous, current)) < 0:
+            current = [-v for v in current]
+        crossed_cut = previous[0] * current[0] < 0
+        if (angle >= 175 - 1e-9 or crossed_cut) and not self.angle_ambiguous:
             self.angle_ambiguous = True
             self.q_req = self.q_out[:]
             self.velocity = [0., 0., 0.]
             self.reason = "大角度姿态有歧义，回到启用参考附近恢复"
             self.event("ANGLE_AMBIGUOUS", self.reason)
-        elif self.angle_ambiguous and near_reference:
+        elif self.angle_ambiguous and angle <= 90 + 1e-9:
             self.angle_ambiguous = False
             self.reason = "已回到启用参考附近，继续按固定参考跟随" if self.armed else "已回到启用参考附近，点击 A 开始跟随"
             self.event("ANGLE_RECOVERED", "已回到启用参考附近，固定参考保持不变")
-        # The enable reference is immutable across clicks, pause, limits and
-        # branch handling. Returning to it must always request the home pose.
-        self.wrist_delta = relative
-        self.last_wrist = angles
-        return True
 
     def _pitch_limits(self):
         return (max(self.config["limits_deg"][1][0] - 45., self.config["limits_deg"][2][0] - 45.),
@@ -236,10 +204,9 @@ class VirtualController:
 
     def _map_requests(self):
         effective = [math.copysign(max(0., abs(delta) - self.config["deadzone_deg"]), delta)
-                     for delta in self.wrist_delta]
-        for index, direction, bounds in ((0, self.config["roll_sign"], self.config["limits_deg"][0]),
-                                         (1, self.config["pitch_sign"], self._pitch_limits())):
-            raw = direction * effective[index]
+                     for delta in self.angles()]
+        for index, bounds in ((0, self.config["limits_deg"][0]), (1, self._pitch_limits())):
+            raw = JOINT_SIGNS[index] * effective[index]
             low, high = bounds
             limited = max(low, min(high, raw))
             if index == 0:
@@ -248,71 +215,64 @@ class VirtualController:
                 self.q_req[1] = self.q_req[2] = 45. + limited
 
     def mapping_state(self):
-        return {"version": MAPPING_VERSION, "anchor_joint_deg": self.anchor_q[:],
-                "mounting": self.mounting_state(),
-                "anchor_wrist_deg": self.anchor_wrist[:] if self.anchor_wrist is not None else None,
-                "delta_wrist_deg": self.wrist_delta[:], "deadzone_deg": self.config["deadzone_deg"],
+        return {"version": MAPPING_VERSION,
+                "reference_quaternion": self.reference_quaternion[:] if self.reference_quaternion is not None else None,
+                "delta_rotation_vector_deg": self.rotation_vector(), "deadzone_deg": self.config["deadzone_deg"],
                 "limit_policy": LIMIT_POLICY, "angle_ambiguous": self.angle_ambiguous, "pitch_weights": [1., 1.],
                 "pitch_limits_deg": list(self._pitch_limits())}
 
-    def settled_neutral(self):
+    def settled_reference(self):
         if not self.valid() or not self.settled_samples or self.frame["a"] or self.frame["b"]:
             raise ValueError("请松开 A/B，在舒适的中立手势静置约 0.5 秒")
         now = self.clock()
         recent = [sample for sample in self.settled_samples if now - sample[0] <= .65]
-        if len(recent) < 10 or recent[-1][0] - recent[0][0] < .48:
+        if len(recent) < 2 or recent[-1][0] - recent[0][0] < .48 - 1e-9:
             raise ValueError("请松开 A/B，在舒适的中立手势静置约 0.5 秒")
-        result = []
-        for index in (1, 2):
-            anchor = recent[-1][index]
-            offsets = [math.remainder(row[index] - anchor, 360) for row in recent]
-            if max(offsets) - min(offsets) > 3:
-                raise ValueError("手腕仍在移动，请保持当前手势稳定约 0.5 秒后重试")
-            result.append(math.remainder(anchor + sum(offsets) / len(offsets), 360))
-        return result
+        if any(b[0] - a[0] > .1 + 1e-9 for a, b in zip(recent, recent[1:])) or any(
+                distance_deg(a[1], b[1]) > 3 + 1e-9 for i, a in enumerate(recent) for b in recent[i+1:]):
+            raise ValueError("手腕仍在移动，请保持当前手势稳定约 0.5 秒后重试")
+        return mean([sample[1] for sample in recent])
+
+    def enable_blockers(self):
+        if self.owner == "REPLAY" or self.armed:
+            return ["请先暂停跟随或停止历史回放，再启用并回初始"]
+        try:
+            self.settled_reference()
+        except ValueError as error:
+            return [str(error)]
+        return []
 
     def gate_status(self):
         if self.owner == "REPLAY":
-            return "REPLAY", ["历史回放中，实时输入不控制模型"], 0.
+            return "REPLAY", ["历史回放中，实时输入不控制模型"]
         if not self.valid():
-            return "INPUT_INVALID", ["需要新鲜、有效且完成校准的 IMU 数据"], 0.
-        if not self.click_firmware_ready():
-            return "FIRMWARE_UPDATE", ["请更新腕端固件以提供 A/B 点击计数 ac/bc"], 0.
+            return "INPUT_INVALID", ["需要新鲜、有效且完成校准的 IMU 数据"]
         if not self.enabled:
-            return "DISABLED", ["松开 A/B 并静置，点击启用并回初始"], 0.
+            return "DISABLED", self.enable_blockers() or ["点击启用并回初始"]
         if self.angle_ambiguous:
-            return "ANGLE_AMBIGUOUS", ["大角度姿态有歧义，回到启用参考附近恢复"], 0.
+            return "ANGLE_AMBIGUOUS", ["大角度姿态有歧义，回到启用参考附近恢复"]
         if self.armed:
-            return "ACTIVE", ["A 点击暂停；B 点击开合夹爪"], 1.
-        return "READY", ["A 点击开始跟随；B 点击开合夹爪"], 1.
+            return "ACTIVE", ["A 点击暂停；B 点击开合夹爪"]
+        return "READY", self.enable_blockers() or ["A 点击开始跟随；B 点击开合夹爪"]
 
     def enable(self):
         if self.owner == "REPLAY" or self.armed:
             raise ValueError("请先暂停跟随或停止历史回放，再启用并回初始")
         if not self.valid():
             raise ValueError("需要有效、已完成校准的真实 IMU")
-        if not self.click_firmware_ready():
-            raise ValueError("腕端固件需更新：缺少 A/B 点击计数 ac/bc")
-        reference = self.settled_neutral()
-        self.config["neutral_deg"] = reference
+        reference = self.settled_reference()
         self.q_req = [0., 45., 45.]
         self.q_out = self.q_req[:]
         self.velocity = [0., 0., 0.]
         self.open_req = self.open_out = 1.
-        self.anchor_q = self.q_out[:]
-        self.anchor_wrist = reference[:]
-        self.last_wrist = self.angles()
-        self.wrist_delta = self.last_wrist[:]
+        self.reference_quaternion = reference
         self.angle_ambiguous = False
         self.click_baseline = {key: self.frame[key] for key in ("ac", "bc")}
         self.enabled, self.armed, self.owner = True, False, "WEARABLE"
-        self.neutral_ready = True
         self.last_tick = self.clock()
         self.reason = "已回初始并记录手势参考；A 点击开始，B 点击开合夹爪"
         self.event("INITIALIZE", "已设置初始化手势参考，虚拟机械臂回到 0/45/45°")
         return reference
-
-    initialize = enable
 
     def stop(self, reason="软件停止"):
         self.hold(reason, disable=True)
