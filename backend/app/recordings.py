@@ -87,7 +87,8 @@ class Recordings:
         if duration > 600_000:
             self.finish("interrupted", "recording time limit")
             return
-        payload = {**sample, "t_ms": duration, "robot_t_ms": t_ms}
+        payload = {**sample, "t_ms": duration,
+                   "robot_t_ms": None if sample.get("clock_domain") == "backend_monotonic" else t_ms}
         with self.db:
             self.db.execute("INSERT INTO samples VALUES (?, ?, ?)",
                             (self.active, self.frames, json.dumps(payload, allow_nan=False)))
@@ -99,9 +100,10 @@ class Recordings:
 
     def note_event(self, event):
         if self.active is not None:
-            payload = {**event, "pc_received_ns": time.monotonic_ns()}
+            payload = {**event}
+            payload.setdefault("pc_received_ns", time.monotonic_ns())
             if self.first_time is not None and type(event.get("t_ms")) is int:
-                payload["robot_t_ms"] = event["t_ms"]
+                payload["robot_t_ms"] = None if event.get("clock_domain") == "backend_monotonic" else event["t_ms"]
                 payload["t_ms"] = event["t_ms"] - self.first_time
             with self.db:
                 self.db.execute("INSERT INTO events VALUES (?, ?, ?)",
@@ -131,8 +133,9 @@ class Recordings:
                 rows = self.db.execute(f"SELECT payload FROM {table} WHERE recording_id=? ORDER BY {index}",
                                        (identifier,))
                 data[key] = [json.loads(row[0]) for row in rows]
-            data["angles_are"] = ("virtual_joint_targets_estimated_preview" if data.get("metadata", {})
-                                  and data["metadata"].get("executor") == "virtual"
+            executor = (data.get("metadata") or {}).get("executor")
+            data["angles_are"] = ("virtual_joint_targets_estimated_preview" if executor == "virtual"
+                                  else "software_output_targets_pwm_locked" if executor == "robot_no_power"
                                   else "applied_servo_targets_not_encoder_readings")
         return data
 

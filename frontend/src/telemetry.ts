@@ -2,6 +2,7 @@ import type { ModelConfig, Pose, Telemetry } from './types'
 
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const nullableNumber = (value: unknown) => value === null || finite(value)
+const optionalAge = (value: unknown) => value === undefined || value === null || finite(value) && value >= 0
 const counter = (value: unknown) => value === null || (finite(value) && Number.isInteger(value) && value >= 0 && value <= 0xffffffff)
 const vector = (value: unknown, length: number): value is number[] => Array.isArray(value) && value.length === length && value.every(finite)
 const nullableVector = (value: unknown, length: number) => value === null || vector(value, length)
@@ -17,9 +18,23 @@ export function isPose(value: unknown): value is Pose {
 export function validFrame(value: unknown): value is Telemetry {
   if (typeof value !== 'object' || !value) return false
   const t = value as Telemetry
-  return t.schema_version === 3 && t.source === 'wearable' && finite(t.server_time_ms) &&
-    t.input?.kind === 'imu_usb' && typeof t.input.status === 'string' &&
-    t.input.attitude_representation === 'quaternion_sensor_to_world_v3' && t.executor?.kind === 'virtual' &&
+  const virtual = t.executor?.kind === 'virtual' && t.input?.kind === 'imu_usb'
+  const robot = t.executor?.kind === 'robot_no_power' && t.input?.kind === 'esp_now' && t.executor.output_locked === true
+  const nullablePose = (p: unknown) => isPose(p) || robot && p === null
+  const g = t.gripper
+  const gripperValid = g === null ? robot : !!g && typeof g.state === 'string' && g.limit_ms === 5000 &&
+    finite(g.requested_open_ratio) && g.requested_open_ratio >= 0 && g.requested_open_ratio <= 1 &&
+    finite(g.output_open_ratio) && g.output_open_ratio >= 0 && g.output_open_ratio <= 1 &&
+    finite(g.elapsed_ms) && g.elapsed_ms >= 0 && nullableNumber(g.remaining_ms) &&
+    (g.remaining_ms === null || g.remaining_ms >= 0 && g.remaining_ms <= 5000) &&
+    counter(g.cycle_id) && g.cycle_id !== null && typeof g.reclose_blocked === 'boolean' &&
+    (g.auto_open_reason === null || typeof g.auto_open_reason === 'string')
+  return t.schema_version === 4 && t.source === 'wearable' && finite(t.server_time_ms) &&
+    (virtual || robot) && typeof t.input.status === 'string' &&
+    optionalAge(t.input.transport_age_ms) && optionalAge(t.executor.age_ms) &&
+    (t.input.wireless_fresh === undefined || typeof t.input.wireless_fresh === 'boolean') &&
+    t.input.attitude_representation === 'quaternion_sensor_to_world_v3' &&
+    typeof t.executor.connected === 'boolean' && typeof t.executor.output_locked === 'boolean' && gripperValid &&
     typeof t.imu?.valid === 'boolean' && quaternion(t.imu.quaternion) &&
     nullableVector(t.imu.gyro_dps, 3) && nullableVector(t.imu.accel_g, 3) &&
     nullableNumber(t.imu.roll_deg) && nullableNumber(t.imu.pitch_deg) &&
@@ -29,7 +44,7 @@ export function validFrame(value: unknown): value is Telemetry {
     Array.isArray(t.control.blockers) && t.control.blockers.every((item) => typeof item === 'string') &&
     t.control.follow?.version === 'coordinated-angle-v3' && quaternion(t.control.follow.reference_quaternion) &&
     nullableVector(t.control.follow.delta_rotation_vector_deg, 3) &&
-    isPose(t.joint_state?.requested) && isPose(t.joint_state?.output_target) && t.joint_state.measured === null &&
+    !!t.joint_state && nullablePose(t.joint_state.requested) && nullablePose(t.joint_state.output_target) && t.joint_state.measured === null &&
     typeof t.recording?.active === 'boolean' && typeof t.replay?.active === 'boolean' && Array.isArray(t.events)
 }
 

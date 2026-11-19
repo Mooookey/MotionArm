@@ -54,16 +54,20 @@ export interface FollowState {
   pitch_limits_deg: [number, number]
 }
 export interface Telemetry {
-  schema_version: 3
+  schema_version: 4
   source: 'wearable'
   config_id?: string
   server_time_ms: number
   input: {
     kind: string; status: string; port: string | null; boot_id: string | number | null
     age_ms: number | null; frames: number; parse_errors: number; detail: string | null
+    transport_age_ms?: number | null
+    wireless_fresh?: boolean
     attitude_representation: 'quaternion_sensor_to_world_v3'
   }
-  executor: { kind: string; label: string }
+  executor: { kind: 'virtual' | 'robot_no_power'; label: string; mode: string; identity: string | null; output_locked: boolean; connected: boolean; port?: string | null; age_ms?: number | null }
+  health?: { wireless?: { status: string; received: number; rejected: number; duplicates: number; out_of_order: number }; pca_readable?: boolean; [key: string]: unknown } | null
+  gripper: GripperState | null
   imu: ImuState
   buttons: ButtonState
   control: {
@@ -75,12 +79,23 @@ export interface Telemetry {
     follow: FollowState
   }
   joint_state: {
-    requested: Pose; output_target: Pose; measured: null
+    requested: Pose | null; output_target: Pose | null; measured: null
     limits: boolean[]; velocity_deg_s: number[]
   }
   recording: { active: boolean; record_id: string | null; frames: number }
   replay: { active: boolean; record_id: string | null; progress: number; geometry?: Geometry }
   events: Array<{ time_ms: number; code: string; message: string }>
+}
+export interface GripperState {
+  state: string
+  requested_open_ratio: number
+  output_open_ratio: number
+  limit_ms: 5000
+  elapsed_ms: number
+  remaining_ms: number | null
+  cycle_id: number
+  auto_open_reason: string | null
+  reclose_blocked: boolean
 }
 export interface RecordingFrame {
   t_ms: number

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fallbackGeometry, referencePose, tipPosition, poseAt } from '../src/geometry.ts'
 import { nextAccelerationWarning, sceneResizeAction } from '../src/displayStability.ts'
-import { coordinatedFollowLabel } from '../src/controlPresentation.ts'
+import { buttonTelemetryFresh, coordinatedFollowLabel } from '../src/controlPresentation.ts'
 import { validFrame, validModelConfig } from '../src/telemetry.ts'
+import { ManagementLease } from '../src/management.ts'
 
 test('upright assembly reference reaches 360mm without forward displacement', () => {
   const p = tipPosition({ ...referencePose, shoulder_down_deg: 0, elbow_down_deg: 0 }, fallbackGeometry)
@@ -92,10 +93,21 @@ test('running and paused labels remain latched when the physical A button is rel
   for (const state of sequence) assert.equal(coordinatedFollowLabel(state.enabled, state.armed), state.label)
 })
 
+test('robot button levels depend on fresh wireless receipt rather than IMU validity', () => {
+  assert.equal(buttonTelemetryFresh(true, 'esp_now', 'invalid', 10, true), true)
+  assert.equal(buttonTelemetryFresh(true, 'esp_now', 'calibrating', 10, true), true)
+  assert.equal(buttonTelemetryFresh(true, 'esp_now', 'valid', 10, false), false)
+  assert.equal(buttonTelemetryFresh(true, 'esp_now', 'valid', 10), false)
+  assert.equal(buttonTelemetryFresh(false, 'esp_now', 'invalid', 10, true), false)
+  assert.equal(buttonTelemetryFresh(true, 'imu_usb', 'invalid', 10), true)
+  assert.equal(buttonTelemetryFresh(true, 'imu_usb', 'valid', 250), false)
+})
+
 const liveFrame = () => ({
-  schema_version: 3, source: 'wearable', server_time_ms: 1000,
+  schema_version: 4, source: 'wearable', server_time_ms: 1000,
   input: { kind: 'imu_usb', status: 'valid', attitude_representation: 'quaternion_sensor_to_world_v3' },
-  executor: { kind: 'virtual' },
+  executor: { kind: 'virtual', connected: true, output_locked: true },
+  gripper: { state: 'OPEN_READY', requested_open_ratio: 1, output_open_ratio: 1, limit_ms: 5000, elapsed_ms: 0, remaining_ms: null, cycle_id: 0, auto_open_reason: null, reclose_blocked: false },
   imu: { valid: true, quaternion: [1, 0, 0, 0], gyro_dps: [0, 0, 0], accel_g: [0, 0, 1], roll_deg: null, pitch_deg: null },
   buttons: { a: false, b: false, ac: 0, bc: 0 },
   control: { enabled: false, armed: false, can_enable: false, gate_status: 'DISABLED', blockers: [],
@@ -103,20 +115,71 @@ const liveFrame = () => ({
   joint_state: { requested: { ...referencePose }, output_target: { ...referencePose }, measured: null },
   recording: { active: false }, replay: { active: false }, events: [],
 })
-test('live telemetry requires V3 and rejects old or incomplete quaternion diagnostics', () => {
+test('live telemetry requires V4 and rejects old or incomplete quaternion diagnostics', () => {
   assert.equal(validFrame(liveFrame()), true)
   for (const change of [
-    (f) => { f.schema_version = 2 },
+    (f) => { f.schema_version = 3 },
     (f) => { delete f.imu.gyro_dps },
     (f) => { f.imu.accel_g = [0, 1] },
     (f) => { f.imu.quaternion = [0, 0, 0, 0] },
     (f) => { f.imu.quaternion = [Infinity, 0, 0, 0] },
     (f) => { delete f.control.can_enable },
     (f) => { delete f.buttons.bc },
+    (f) => { delete f.gripper },
+    (f) => { f.gripper.limit_ms = 700 },
+    (f) => { f.gripper.remaining_ms = 5001 },
+    (f) => { f.input.wireless_fresh = 'true' },
   ]) {
     const value = liveFrame(); change(value)
     assert.equal(validFrame(value), false)
   }
+})
+
+test('robot targets only accept ESP-NOW source and a locked hardware output', () => {
+  const value = liveFrame()
+  value.executor.kind = 'robot_no_power'
+  value.input.kind = 'esp_now'
+  value.input.age_ms = 12
+  value.input.transport_age_ms = null
+  value.input.wireless_fresh = true
+  value.executor.age_ms = 180
+  assert.equal(validFrame(value), true)
+  value.executor.age_ms = -1
+  assert.equal(validFrame(value), false)
+  value.executor.age_ms = 180
+  value.input.transport_age_ms = NaN
+  assert.equal(validFrame(value), false)
+  value.input.transport_age_ms = null
+  value.joint_state.requested = value.joint_state.output_target = null
+  value.gripper = null
+  assert.equal(validFrame(value), true)
+  value.executor.output_locked = false
+  assert.equal(validFrame(value), false)
+  value.executor.output_locked = true
+  value.input.kind = 'imu_usb'
+  assert.equal(validFrame(value), false)
+  value.input.kind = 'esp_now'
+  value.joint_state.measured = { ...referencePose }
+  assert.equal(validFrame(value), false)
+})
+
+test('page management lease requires explicit grant and never survives reload or loss', () => {
+  const lease = new ManagementLease()
+  lease.observe(true, true)
+  assert.equal(lease.payload(), null)
+  assert.equal(lease.message(), null)
+  lease.grant('explicit-token')
+  lease.observe(true, false) // Previous telemetry can arrive before initialization state.
+  assert.deepEqual(lease.payload(), { manager_token: 'explicit-token' })
+  assert.deepEqual(lease.message(), { type: 'heartbeat', manager_token: 'explicit-token' })
+  lease.observe(true, true)
+  lease.observe(true, false)
+  assert.equal(lease.payload(), null)
+  lease.grant('second-token')
+  lease.observe(false, true)
+  assert.equal(lease.payload(), null)
+  assert.equal(lease.message(), null)
+  assert.equal(new ManagementLease().payload(), null)
 })
 test('disconnected telemetry uses explicit null diagnostics and no fabricated relative angles', () => {
   const value = liveFrame()

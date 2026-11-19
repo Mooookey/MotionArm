@@ -1,6 +1,11 @@
 #include <Wire.h>
 #include <math.h>
 #include <esp_random.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <MotionArmLink.h>
+#include <MotionArmPeers.h>
 #include "OrientationFilter.h"
 #include "DebouncedButton.h"
 #include "WearableTelemetry.h"
@@ -36,6 +41,42 @@ float gravitySum = 0, gravityReference = 1;
 float temperature = 0;
 OrientationFilter attitude;
 uint32_t bootId = 0, telemetrySequence = 0;
+bool radioReady = false;
+uint8_t staMac[6]{};
+
+void initializeRadio() {
+  WiFi.mode(WIFI_STA);
+  if (esp_wifi_get_mac(WIFI_IF_STA, staMac) != ESP_OK ||
+      memcmp(staMac, motionarm::wearableMac, sizeof(staMac))) return;
+  if (esp_wifi_set_channel(motionarm::channel, WIFI_SECOND_CHAN_NONE) != ESP_OK ||
+      esp_now_init() != ESP_OK) return;
+  esp_now_peer_info_t peer{};
+  memcpy(peer.peer_addr, motionarm::robotMac, 6);
+  peer.channel = motionarm::channel;
+  peer.ifidx = WIFI_IF_STA;
+  peer.encrypt = false;
+  radioReady = esp_now_add_peer(&peer) == ESP_OK;
+}
+
+void transmitWireless(const WearableTelemetry &t) {
+  if (!radioReady) return;
+  motionarm::Frame packet{};
+  packet.flags = (t.valid ? 1 : 0) | (t.a ? 2 : 0) | (t.b ? 4 : 0) |
+    (followButton.primed && gripperButton.primed ? 8 : 0);
+  packet.boot = t.boot; packet.seq = t.seq; packet.uptime = t.ms; packet.ageMs = t.ageMs;
+  packet.q[0] = t.q.w; packet.q[1] = t.q.x; packet.q[2] = t.q.y; packet.q[3] = t.q.z;
+  for (size_t i = 0; i < 3; ++i) {
+    packet.gyroDps[i] = t.gyroDps[i]; packet.accelG[i] = t.accelG[i];
+  }
+  packet.calibrationSamples = t.calibrationSamples;
+  packet.ac = t.ac; packet.bc = t.bc; packet.errors = t.errors; packet.rejected = t.rejected;
+  packet.normG = t.normG; packet.tempC = t.temperatureC;
+  packet.who = t.who; packet.rejection = t.rejection;
+  uint8_t bytes[motionarm::frameSize];
+  if (!motionarm::encode(packet, bytes)) return;
+  // A MAC-layer result is transport diagnostics only, never motion acceptance.
+  esp_now_send(motionarm::robotMac, bytes, sizeof(bytes));
+}
 
 bool readRegisters(uint8_t reg, uint8_t *bytes, size_t count) {
   Wire.beginTransmission(kImuAddress);
@@ -196,8 +237,9 @@ void setup() {
   pinMode(gripperButton.pin, INPUT);
   bootId = esp_random();
   if (!bootId) bootId = 1;
-  // USB-only firmware: no WiFi or ESP-NOW transmitter is started.
-  Serial.println("role=wearable transport=usb protocol=1 orientation=quaternion_v3 gyro_range_dps=2000 buttons=press_toggle_v1");
+  initializeRadio();
+  Serial.printf("role=wearable transport=usb+espnow protocol=2 mac=%02X:%02X:%02X:%02X:%02X:%02X radio=%u orientation=quaternion_v3 gyro_range_dps=2000 buttons=press_toggle_v1\n",
+      staMac[0], staMac[1], staMac[2], staMac[3], staMac[4], staMac[5], unsigned(radioReady));
   Wire.begin(21, 22, 100000);
   Wire.setTimeOut(20);
   configured = configureImu();
@@ -234,6 +276,9 @@ void loop() {
       followButton.primed && followButton.stable, gripperButton.primed && gripperButton.stable,
       followButton.presses, gripperButton.presses, accelNorm, temperature, errors,
       uint8_t(rejection), rejected};
+  // Radio scheduling precedes the USB capacity check: a busy PC must not stop
+  // wireless input, and the robot owns its own reference and watchdogs.
+  transmitWireless(telemetry);
   const int length = serializeWearable(frame, sizeof(frame), telemetry);
   if (length <= 0 || size_t(length) > kTelemetryMaxBytes ||
       Serial.availableForWrite() < length) return;

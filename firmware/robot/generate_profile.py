@@ -37,7 +37,7 @@ def literal(value):
 def generate(profile):
     for key in ("verified_on_hardware", "allow_arm", "operator_confirmed_initial_pose"):
         require(profile.get(key) is True, key)
-    require(integer(profile.get("schema_version"), "schema_version") == 1, "schema_version")
+    require(integer(profile.get("schema_version"), "schema_version") == 2, "schema_version (explicit startup angles required)")
     board = profile["board"]
     require(board.get("physical_cutoff_tested") is True and board.get("gravity_support_tested") is True,
             "board.physical_cutoff_tested / gravity_support_tested")
@@ -71,7 +71,13 @@ def generate(profile):
         speed, accel = (float(number(item.get(k), f"{name}.{k}"))
                         for k in ("max_velocity_deg_s", "max_acceleration_deg_s2"))
         require(0 < speed <= 180 and 0 < accel <= 360, f"{name} bounded speed/acceleration")
-        rows.append((low, high, home, pmin, pmax, phome, inverted, speed, accel))
+        startup = float(number(item.get("startup_deg"), f"{name}.startup_deg"))
+        require(low <= startup <= high, f"{name}.startup_deg within measured limits")
+        if name != "gripper":
+            require(startup == (0 if name == "base" else 45), f"{name} startup must match 0/45/45")
+        else:
+            require(startup == home, "gripper startup must be open")
+        rows.append((low, high, home, pmin, pmax, phome, inverted, speed, accel, startup))
         endpoints.append((low, high, home))
 
     item = entries[3]
@@ -79,7 +85,7 @@ def generate(profile):
                             for k in ("open_us", "close_us", "max_closed_hold_ms"))
     require(opened == rows[3][5] and rows[3][3] <= closed <= rows[3][4] and opened != closed,
             "gripper measured open/close and open home")
-    require(0 < hold <= 700, "gripper hold time (maximum 700 ms)")
+    require(hold == 5000, "gripper software deadline must be 5000 ms (not a thermal safety certification)")
     tick = period / 4096
     require(all(math.ceil(row[3] / tick) < math.floor(row[4] / tick) for row in rows) and
             math.ceil(min(opened, closed) / tick) < math.floor(max(opened, closed) / tick),
@@ -88,8 +94,9 @@ def generate(profile):
     wearable = profile["wearable"]
     roll, pitch = (integer(wearable.get(k), k) for k in ("roll_axis_sign", "pitch_axis_sign"))
     require(roll in (-1, 1) and pitch in (-1, 1), "wearable axis sign")
+    require((roll, pitch) == (1, -1), "fixed verified wrist mapping signs +1/-1")
     deadzone = float(number(wearable.get("deadzone_deg_starting_point"), "deadzone"))
-    require(0 < deadzone < 30, "deadzone")
+    require(0 < deadzone <= 20, "deadzone")
     workcell = profile["workcell"]
     require(workcell.get("base_fixed") is True and workcell.get("joint_space_validated") is True,
             "workcell.base_fixed / joint_space_validated")
@@ -110,6 +117,8 @@ def generate(profile):
         boxes.append((mins, maxs))
     require(any(all(v <= h <= w for (_, _, h), v, w in zip(endpoints, a, b))
                 for a, b in boxes), "home outside all verified regions")
+    require(any(all(v <= row[-1] <= w for row, v, w in zip(rows, a, b))
+                for a, b in boxes), "startup outside all verified regions")
 
     source = dict(profile)
     source.pop("calibration_id", None)

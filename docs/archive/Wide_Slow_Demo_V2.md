@@ -1,6 +1,8 @@
+> 历史演示记录：700ms和约3秒仅描述当时实现；现行主线统一5000ms软件保护。不得据本页接通动力。
+
 # V2：45°待机、先升后转的连续抓放
 
-打开 `firmware/joint_demo_v2/joint_demo_v2.ino`，动作参数在同目录 `ArmDemo.h`。本版为当前实物演示入口。早期实验已移至外部历史目录，见 [历史资料入口](Archive_Access.md)。
+打开 `firmware/archive/joint_demo_v2/joint_demo_v2.ino`，动作参数在同目录 `ArmDemo.h`。本版已归档，禁止作为本轮无动力联调入口。早期实验已移至外部历史目录，见 [历史资料入口](../Archive_Access.md)。
 
 ## 姿态区分
 

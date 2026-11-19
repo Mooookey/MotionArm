@@ -1,44 +1,17 @@
-# 当前实物开发入口（2026-11-18）
+# MotionArm：真实IMU与无动力执行端
 
-- **真实 IMU 三维控制台**：[启动与操作](docs/16_Virtual_Console.md)。默认 `wearable` 模式，腕端 att:3 完整四元数 → USB → FastAPI → 虚拟执行端 → Vue/Three.js（Web遥测V3）。固定手背安装，启用时捕获三维参考并回初始；A 点击开始／暂停，B 点击夹爪，Pitch 协同控制大小臂，采用固定参考限位；支持三轴诊断、录制和离线历史回放，不连接实体执行端。新后端需要配套升级腕端固件。
-- **最新机械臂代码**：[joint_demo_v2.ino](firmware/joint_demo_v2/joint_demo_v2.ino)，[操作说明](docs/15_Wide_Slow_Demo_V2.md)。按 `ARM → APPROACH → DRY → GRIP` 操作，底座旋转前先抬回约45°。
-- **当前标定与最初竖直3D零姿态**：[机械臂基线](docs/Robot_Baseline.md) · [参数JSON](config/robot_baseline.json)。竖直参考为1610/1630/1570；当前待机为1610/1030/1050，不混用。
-- **测量原图**：[8张尺寸图与取值说明](outlook/dimensions/README.md)。
-- **历史下午手腕端接手**：[交接文档](docs/Wearable_Handoff.md)，保留ESP-NOW、旧按键／速度控制方案及实体集成缺口；不作为当前虚拟控制台操作依据。
-- **本机启动**：[串口演示与前后端入口](docs/Local_Quickstart.md) · [历史资料位置](docs/Archive_Access.md)。
+当前阶段为 [ESP-NOW执行端无动力接入](docs/17_No_Power_Executor.md)。**舵机动力保持关闭**，只给ESP32和PCA9685逻辑侧供电；robot固件没有可解除的输出锁或有效PWM输出路径。本阶段不进行实体运动或带载抓放。
 
-当前实体演示不接收ESP-NOW，正式robot仍锁定。网页现提供真实腕端 USB 数据源与三维虚拟目标，模型不是实体关节实测反馈；腕端固件本阶段为 USB 专用。最新实体组合动作仍待现场复测。原有设计资料如下保留，具体状态以当前基线和新控制台说明为准。
+主链路：MPU6050 → wearable ESP32 → ESP-NOW v2 → robot本地控制与保护 → 软件输出目标 → 锁定的PCA9685。USB只用于开发、管理、诊断和Web遥测。
 
----
+- [启动与无动力检查](docs/Local_Quickstart.md)
+- [完整控制语义和阶段边界](docs/17_No_Power_Executor.md)
+- [无线及USB协议](docs/03_Communication_Protocol.md)
+- [虚拟控制台及既有实测记录](docs/16_Virtual_Console.md)
+- [机械零姿态、尺寸与标定依据](docs/Robot_Baseline.md) · [结构化基线](config/robot_baseline.json)
+- [未验收实机配置](config/robot_calibration.local.json) · [配置生成器说明](firmware/robot/README.md)
+- [历史串口演示](docs/archive/Wide_Slow_Demo_V2.md)与`firmware/archive/joint_demo_v2`仅为历史证据，已退出当前运行入口。
 
-# Robot Teleoperation MVP / 机械臂遥操作项目实施文档包
+当前A点击开始/暂停、B点击夹爪；完整四元数固定参考角度跟随，Roll控制底座，Pitch以1:1协同双臂。虚拟与robot夹爪统一不可续期5000ms保护，停止/失效/断链更早请求打开。Web区分虚拟和实体无动力软件目标，未安装位置传感器，measured始终null。
 
-## 阅读入口
-
-1. **[`Plan.md`](Plan.md)**：目标、边界、实物修正、总体架构、M0–M9 里程碑、功能接口与验收。
-2. [`docs/01_Hardware_Safety.md`](docs/01_Hardware_Safety.md)：两 ESP32 + MPU6050 + PCA9685 的实物接线、安全供电、夹爪风险、上电和四路标定。
-3. [`docs/02_Firmware_Control.md`](docs/02_Firmware_Control.md)：手腕端姿态/按钮/ESP-NOW，机器人端 50Hz 目标、斜坡、owner 与安全状态机。
-4. [`docs/03_Communication_Protocol.md`](docs/03_Communication_Protocol.md)：24 字节 ESP-NOW、Serial NDJSON、ACK/lease/session、FastAPI REST 与 Vue WS 数据结构。
-5. [`docs/04_Backend_Data_Replay.md`](docs/04_Backend_Data_Replay.md)：FastAPI、PySerial、SQLite、时间线、录制状态机、安全预检与回放。
-6. [`docs/05_Frontend_Vue3.md`](docs/05_Frontend_Vue3.md)：Vue 3/TS/Vite/Pinia/ECharts 的控制台、录制/回放页面与断线规则。
-7. [`docs/06_Test_Validation.md`](docs/06_Test_Validation.md)：分层单测、模拟/通电故障测试、MVP 验收和实验报告模板。
-8. [`docs/07_Execution_Tracker.md`](docs/07_Execution_Tracker.md)：团队任务矩阵、依赖、交付条件与英文路径构建建议。
-9. [`docs/08_References_Decisions.md`](docs/08_References_Decisions.md)：与原资料冲突的口径、更正原因、开源项目的使用边界。
-10. [`docs/09_Runbook_Troubleshooting.md`](docs/09_Runbook_Troubleshooting.md)：现场演示 SOP、紧急停止与故障排查。
-
-## 安全配置示例
-
-- [`config/robot_calibration.example.json`](config/robot_calibration.example.json)：**全部真实行程参数初始为 `null`，`allow_arm=false`，故意不可直接驱动机械臂**；需按实物逐路校准、校验并保存新配置。
-- [`config/system.example.yaml`](config/system.example.yaml)：建议通信频率、超时与服务端本地部署设置；不是实测设备参数。
-
-## 必须遵守的范围
-
-- 实物四个 PWM 控制通道：**CH14 底座、CH15 大臂、CH13 小臂、CH12 夹爪**，不是上游五轴 CH0–4。
-- 前端**只采用 Vue 3**，不引入 React、摄像头视觉闭环或自然语言控制。
-- 采用手腕 IMU 姿态 → 关节增量速度 → 安全 PWM；**无需在 MVP 引入 XYZ 逆运动学**。
-- 普通三线舵机不回传外部关节轴角；网页与数据都只能称“指令/软件目标”，不能称“实体位置实测闭环”。
-- 机械臂承重关节在失去力矩后会下垂。配置未实测、机械无支撑、电源未确认或无法物理断电时**不得启用运动**。
-
-## 衔接原有仓库
-
-保留原 `AGENTS.md` 和实际工作区的工具链。建议仅将本包的 `Plan.md`、`docs/`、`config/` 放入原仓库；如果原目录已有同名文件，先用版本控制对比，**不要覆盖**已有实测校准/源代码。文档使用英文路径而中文内容，符合已有工具链限制。
+机械臂无驱动保持时会下垂。后续有动力阶段必须另行明确授权，在机械支撑、供电、断电手段和标定条件落实后，按单轴低速小范围、整臂空载、夹爪顺序验证。当前软件、通信或逻辑目标通过都不表示这些项目通过。

@@ -44,4 +44,4 @@ onMounted(() => {
 })
 onBeforeUnmount(() => { clearTimeout(timer); resize?.disconnect(); chart?.dispose() })
 </script>
-<template><div ref="node" class="chart" role="img" :aria-label="type === 'imu' ? '手腕姿态时间曲线' : '虚拟关节请求和输出目标时间曲线'"></div></template>
+<template><div ref="node" class="chart" role="img" :aria-label="type === 'imu' ? '手腕姿态时间曲线' : '关节请求和软件输出目标时间曲线'"></div></template>

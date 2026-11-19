@@ -17,6 +17,7 @@ struct Joint {
   bool inverted;
   float speedDegPerSec;
   float accelerationDegPerSec2;
+  float startupDeg; // Startup request, distinct from the homeDeg/homeUs mapping anchor.
 };
 
 struct Region {

@@ -36,7 +36,7 @@ def mock_calibration():
          "logical_max_deg": 180, "max_velocity_deg_s": 25, "max_acceleration_deg_s2": 100}
         for name, channel, default in zip(JOINTS, (14, 15, 13, 12), DEFAULT_MOCK_ANGLES)
     ]
-    axes[-1].update(open_deg=25, max_closed_hold_ms=700)
+    axes[-1].update(open_deg=25, max_closed_hold_ms=5000)
     return {"allow_arm": True, "calibration_id": "mock-v1", "joints": axes,
             "verified_on_hardware": False, "workcell": {"workcell_id": "mock"}}
 
@@ -364,9 +364,9 @@ class Runtime:
 
 def create_app(source=None, db_path=None, calibration_path=None):
     source = source or os.environ.get("MOTIONARM_SOURCE", "wearable")
-    if source == "wearable":
+    if source in ("wearable", "serial", "robot_no_power"):
         from .virtual_api import create_virtual_app
-        return create_virtual_app(db_path=db_path)
+        return create_virtual_app(db_path=db_path, executor_kind="virtual" if source == "wearable" else "robot_no_power")
     if source not in ("mock", "serial"):
         raise ValueError("MOTIONARM_SOURCE must be wearable, mock or serial")
     database = db_path or os.environ.get("MOTIONARM_DB_PATH", str(ROOT / "data" / f"{source}.sqlite3"))

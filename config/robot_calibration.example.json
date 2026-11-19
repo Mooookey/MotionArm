@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "profile_name": "robot_teleop_mvp_unverified_template",
   "verified_on_hardware": false,
   "allow_arm": false,
@@ -29,7 +29,8 @@
       "home_us": null,
       "inverted": null,
       "max_velocity_deg_s": null,
-      "max_acceleration_deg_s2": null
+      "max_acceleration_deg_s2": null,
+      "startup_deg": 0
     },
     {
       "id": "shoulder",
@@ -42,7 +43,8 @@
       "home_us": null,
       "inverted": null,
       "max_velocity_deg_s": null,
-      "max_acceleration_deg_s2": null
+      "max_acceleration_deg_s2": null,
+      "startup_deg": 45
     },
     {
       "id": "elbow",
@@ -55,7 +57,8 @@
       "home_us": null,
       "inverted": null,
       "max_velocity_deg_s": null,
-      "max_acceleration_deg_s2": null
+      "max_acceleration_deg_s2": null,
+      "startup_deg": 45
     },
     {
       "id": "gripper",
@@ -71,7 +74,8 @@
       "max_acceleration_deg_s2": null,
       "open_us": null,
       "close_us": null,
-      "max_closed_hold_ms": null
+      "max_closed_hold_ms": 5000,
+      "startup_deg": null
     }
   ],
   "wearable": {
@@ -79,14 +83,12 @@
     "imu_verified_i2c_address_hex": null,
     "sda_gpio": 21,
     "scl_gpio": 22,
-    "deadman_button_gpio": 25,
-    "mode_gripper_button_gpio": 26,
     "buttons_active_low": true,
-    "roll_axis_sign": null,
-    "pitch_axis_sign": null,
-    "neutral_roll_deg": null,
-    "neutral_pitch_deg": null,
-    "deadzone_deg_starting_point": 5.0
+    "roll_axis_sign": 1,
+    "pitch_axis_sign": -1,
+    "deadzone_deg_starting_point": 5.0,
+    "follow_button_gpio": 25,
+    "gripper_button_gpio": 26
   },
   "workcell": {
     "workcell_id": null,
@@ -98,5 +100,6 @@
     "gripper_capture_surface_verified": false,
     "safe_joint_regions": null,
     "collision_exclusion_notes": null
-  }
+  },
+  "home_reference_note": "home_deg/home_us are mapping anchors; startup_deg is a separate unpowered software request. Unknown calibration values remain unknown; all safety approval flags remain false."
 }

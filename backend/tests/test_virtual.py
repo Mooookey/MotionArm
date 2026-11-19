@@ -83,9 +83,11 @@ class VirtualControllerTests(unittest.TestCase):
     def test_initialize_resets_targets_gripper_and_button_baseline(self):
         self.controller.q_out = [30, 20, 55]
         self.controller.open_req = self.controller.open_out = 0
+        self.controller.stop()
         self.initialize(ac=1001, bc=502)
         self.assertEqual(self.controller.q_req, [0, 45, 45])
         self.assertEqual(self.controller.q_out, self.controller.q_req)
+        self.assertEqual(self.controller.open_req, 1)
         self.assertEqual(self.controller.open_out, 1)
         self.advance()
         self.assertFalse(self.controller.armed)
@@ -167,7 +169,7 @@ class VirtualControllerTests(unittest.TestCase):
             self.assertLessEqual(abs(self.controller.q_out[index] - paused[index]), cap*.02 + 1e-9)
         self.assertEqual(self.controller.reference_quaternion, reference)
 
-    def test_b_toggles_while_paused_and_gripper_persists_through_stop_or_fault(self):
+    def test_b_toggles_while_paused_and_stop_or_fault_releases_gripper(self):
         self.initialize()
         self.click_b()
         for _ in range(15):
@@ -178,7 +180,10 @@ class VirtualControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.open_req, 0)
         self.controller.stop()
         self.advance(bc=self.current["bc"]+1)
-        self.assertEqual(self.controller.open_out, 0)
+        self.assertEqual(self.controller.open_req, 1)
+        for _ in range(12):
+            self.advance()
+        self.assertEqual(self.controller.open_out, 1)
         self.assertIsNone(self.controller.reference_quaternion)
         self.initialize()
         self.assertEqual(self.controller.open_out, 1)
@@ -187,7 +192,7 @@ class VirtualControllerTests(unittest.TestCase):
             self.advance()
         self.advance(valid=0, rej=4)
         self.assertFalse(self.controller.enabled)
-        self.assertEqual(self.controller.open_out, 0)
+        self.assertEqual(self.controller.open_req, 1)
         self.assertIn("饱和", self.controller.reason)
 
     def test_soft_deadzone_fixed_tilt_settles_and_pure_z_does_not_drive(self):

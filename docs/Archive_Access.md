@@ -6,6 +6,6 @@
 
 其中 `from_repository` 保留原相对路径；`from_exp3` 是本机暂存工程与实验；`before_updates` 是本次整理前被更新文件的副本。`manifest.json`、`README.md` 保存来源、目标、哈希和核对信息，供以后恢复读取。
 
-当前仓库只把 [最新演示](15_Wide_Slow_Demo_V2.md)、[标定基线](Robot_Baseline.md)、[腕端交接](Wearable_Handoff.md) 作为本轮实物开发入口。原有设计文档01～09、Plan、prompt与原始接线图保留。前后端、正式双端固件及无线库属于后续开发需要的功能工程，继续保留。
+当前操作入口为 [无动力执行端](17_No_Power_Executor.md)，标定依据见 [机械臂基线](Robot_Baseline.md)。[旧演示](archive/Wide_Slow_Demo_V2.md)、[旧交接](Wearable_Handoff.md)及archive内旧设计仅为历史证据，不是当前操作指令。原始接线图和历史记录继续保留。
 
 本机绝对历史路径不属于可移植仓库依赖；队友只看当前基线即可接手，需要历史证据时再按清单读取。此整理没有提交或推送Git。

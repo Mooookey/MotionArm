@@ -1,6 +1,6 @@
 param(
     [ValidateSet('Check', 'Build', 'Upload')][string]$Action = 'Check',
-    [ValidatePattern('^[a-zA-Z][a-zA-Z0-9_]*$')][string]$Sketch = 'robot',
+    [ValidateSet('wearable', 'robot')][string]$Sketch = 'robot',
     [ValidatePattern('^COM[1-9][0-9]*$')][string]$Port,
     [ValidateRange(9600, 2000000)][int]$UploadBaud = 115200,
     [string]$Cli,

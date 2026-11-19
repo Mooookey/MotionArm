@@ -17,7 +17,7 @@ def recording_csv(record):
     targets = [f"{kind}_{key}" for kind in ("requested", "output")
                for key in (*POSE_KEYS, "gripper_open_ratio")]
     common = ["t_ms", "source", "executor", "angle_convention", *targets]
-    modern = metadata.get("schema_version") == 3
+    modern = metadata.get("schema_version") in (3, 4)
     if modern:
         writer.writerow([*common, "controller_version", "attitude_representation", "mounting_profile",
                          "roll_deg", "pitch_deg", *[f"q_{a}" for a in "wxyz"],
@@ -26,7 +26,9 @@ def recording_csv(record):
                          *[f"gyro_{a}_dps" for a in "xyz"], *[f"accel_{a}_g" for a in "xyz"],
                          "norm_g", "temp_c", "gyro_range_dps", "reject_reason", "rejected_samples",
                          "errors", "who", "calibration_samples", "valid", "imu_seq", "device_ms",
-                         "a", "b", "ac", "bc", "owner"])
+                         "a", "b", "ac", "bc", "owner",
+                         "gripper_state", "gripper_limit_ms", "gripper_elapsed_ms", "gripper_remaining_ms",
+                         "gripper_cycle_id", "gripper_auto_open_reason", "gripper_reclose_blocked", "output_locked"])
     else:
         writer.writerow([*common, "roll_deg", "pitch_deg", "a", "b", "ac", "bc",
                          "short", "long", "mode", "owner", "legacy_payload"])
@@ -45,7 +47,9 @@ def recording_csv(record):
                     *[imu.get(k) for k in ("norm_g", "temp_c", "gyro_range_dps", "reject_reason",
                                           "rejected_samples", "errors", "who", "calibration_samples", "valid")],
                     frame.get("imu_seq"), frame.get("device_ms"),
-                    *[buttons.get(k) for k in ("a", "b", "ac", "bc")], frame.get("owner")]
+                    *[buttons.get(k) for k in ("a", "b", "ac", "bc")], frame.get("owner"),
+                    *[frame.get("gripper", {}).get(k) for k in ("state", "limit_ms", "elapsed_ms", "remaining_ms", "cycle_id", "auto_open_reason", "reclose_blocked")],
+                    frame.get("executor", {}).get("output_locked")]
         else:
             row += [imu.get("roll_deg"), imu.get("pitch_deg"),
                     *[buttons.get(k) for k in ("a", "b", "ac", "bc", "short", "long")],

@@ -4,7 +4,7 @@
 #include <cstdio>
 #include "OrientationFilter.h"
 
-// USB v1 / att3 is the only live wrist format. Keep serialization shared with
+// USB v1 / att3 remains unchanged alongside ESP-NOW v2. Keep serialization shared with
 // the host-side regression so its worst-case UART budget is actually tested.
 constexpr size_t kTelemetryMaxBytes = 384;
 

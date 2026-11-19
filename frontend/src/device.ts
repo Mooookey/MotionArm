@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { request } from './api'
 import type { ModelConfig, Point, Telemetry } from './types'
 import { validFrame, validModelConfig } from './telemetry'
+import { ManagementLease } from './management'
 export { isPose } from './telemetry'
 
 export const useDevice = defineStore('device', () => {
@@ -16,6 +17,8 @@ export const useDevice = defineStore('device', () => {
   let socket: WebSocket | undefined
   let reconnect: ReturnType<typeof setTimeout> | undefined
   let watchdog: ReturnType<typeof setInterval> | undefined
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined
+  const management = new ManagementLease()
   let generation = 0, seenAt = 0, lastPoint = 0, attempts = 0
   let configRequest: Promise<void> | undefined
   let retryConfigAt = 0
@@ -33,16 +36,19 @@ export const useDevice = defineStore('device', () => {
   }
   function accept(value: unknown) {
     if (!validFrame(value)) {
+      management.clear()
       if (typeof value === 'object' && value !== null && 'source' in value) {
         const source = (value as { source: unknown }).source
         incompatible.value = source === 'wearable'
-          ? '后端遥测格式不兼容，需要三维姿态 V3 服务。请同步更新前后端。'
+          ? '后端遥测格式不兼容，需要执行端 V4 服务。请同步更新前后端。'
           : '当前后端输入为 ' + String(source) + '。请使用 wearable 模式启动服务。'
       }
       return
     }
     incompatible.value = ''
+    if (snapshot.value && snapshot.value.executor.kind !== value.executor.kind) points.value = []
     snapshot.value = value
+    management.observe(true, value.control.enabled)
     connection.value = 'connected'
     seenAt = performance.now()
     attempts = 0
@@ -73,6 +79,7 @@ export const useDevice = defineStore('device', () => {
       socket.onclose = () => {
         if (current !== generation) return
         connection.value = 'offline'
+        management.clear()
         reconnect = setTimeout(connect, Math.min(500 * 2 ** attempts++, 8000))
       }
     }
@@ -80,15 +87,26 @@ export const useDevice = defineStore('device', () => {
     watchdog = setInterval(() => {
       if (connection.value === 'connected' && performance.now() - seenAt > 500) {
         connection.value = 'stale'
+        management.clear()
         socket?.close()
       }
     }, 100)
+    heartbeatTimer = setInterval(() => {
+      const message = management.message()
+      if (message && fresh.value && socket?.readyState === WebSocket.OPEN) {
+        try { socket.send(JSON.stringify(message)) } catch { management.clear() }
+      }
+    }, 250)
   }
   function stop() {
     ++generation
+    management.clear()
     clearTimeout(reconnect)
     clearInterval(watchdog)
+    clearInterval(heartbeatTimer)
     socket?.close()
   }
-  return { snapshot, model, connection, incompatible, fresh, realReady, points, start, stop, loadConfig }
+  function grantManagement(token: string) { management.grant(token) }
+  function releaseManagement() { management.clear() }
+  return { snapshot, model, connection, incompatible, fresh, realReady, points, start, stop, loadConfig, grantManagement, releaseManagement }
 })

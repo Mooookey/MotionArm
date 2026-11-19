@@ -85,6 +85,12 @@ class VirtualController:
         self.reference_quaternion = None
         self.angle_ambiguous = False
         self.click_baseline = None
+        self.gripper_state = "OPEN_READY"
+        self.gripper_started = None
+        self.gripper_cycle = 0
+        self.gripper_reason = None
+        self.gripper_released = True
+        self.event_seq = 0
 
     @property
     def config_id(self):
@@ -93,7 +99,8 @@ class VirtualController:
         return "virtual:" + sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
 
     def event(self, code, message):
-        self.events.append({"time_ms": int(time.time() * 1000), "code": code, "message": message})
+        self.event_seq += 1
+        self.events.append({"event_seq": self.event_seq, "time_ms": int(time.time() * 1000), "code": code, "message": message})
         self.events = self.events[-60:]
 
     def age_ms(self, now=None):
@@ -120,18 +127,64 @@ class VirtualController:
         self.velocity = [0., 0., 0.]
         self.armed = False
         self.reason = reason
-        # The virtual gripper is independent of A, fault and stop. Its logical
-        # open/closed target persists; disabled sessions freeze its output too.
         if disable:
+            self.release_gripper("CONTROL_DISABLED")
             self.enabled = False
             self.owner = "NONE"
             self.click_baseline = None
             self.angle_ambiguous = False
             self.reference_quaternion = None
 
+    def release_gripper(self, reason=None):
+        if self.open_req < 1 or self.open_out < 1 or self.gripper_state != "OPEN_READY":
+            self.open_req = 1.
+            self.gripper_state = "OPENING"
+            self.gripper_released = False
+            if reason and reason != self.gripper_reason and (self.gripper_reason is None or reason != "CONTROL_DISABLED"):
+                self.gripper_reason = reason
+                self.event("GRIPPER_AUTO_OPEN", reason)
+
+    def _gripper_deadline(self, now):
+        if self.owner != "REPLAY" and self.gripper_state in ("CLOSING", "CLOSED") and self.gripper_started is not None and now - self.gripper_started >= 5. - 1e-9:
+            self.release_gripper("TIME_LIMIT")
+
+    def _gripper_clicks(self, count, frame, now):
+        if self.owner != "REPLAY":
+            self._gripper_deadline(now)
+        # Lost events have unknown timing; never replay a stale close cycle.
+        if count > 1:
+            self.release_gripper("BUTTON_EVENTS_COALESCED")
+            self.event("BUTTON_EVENTS_COALESCED", "夹爪点击合并，请求打开")
+            return
+        for _ in range(count):
+            if self.gripper_state in ("CLOSING", "CLOSED"):
+                self.release_gripper()
+                self.event("GRIPPER", "夹爪打开")
+            elif self.gripper_state == "OPEN_READY" and self.gripper_released:
+                self.open_req = 0.
+                self.gripper_state = "CLOSING"
+                self.gripper_started = now
+                self.gripper_cycle += 1
+                self.gripper_reason = None
+                self.gripper_released = False
+                self.event("GRIPPER", "夹爪闭合；最多 5000ms")
+        if not count and not frame["b"] and self.gripper_state == "OPEN_READY":
+            self.gripper_released = True
+
+    def gripper_status(self, now=None):
+        now = self.clock() if now is None else now
+        elapsed = 0 if self.gripper_started is None else max(0, int(round((now - self.gripper_started) * 1000)))
+        active = self.gripper_state in ("CLOSING", "CLOSED")
+        return {"state": self.gripper_state, "requested_open_ratio": self.open_req,
+                "output_open_ratio": self.open_out, "limit_ms": 5000,
+                "elapsed_ms": min(5000, elapsed), "remaining_ms": max(0, 5000 - elapsed) if active else 0,
+                "cycle_id": self.gripper_cycle, "auto_open_reason": self.gripper_reason,
+                "reclose_blocked": self.gripper_state != "OPEN_READY" or not self.gripper_released}
+
     def receive(self, frame, now=None):
         frame = validate_frame(frame)
         now = self.clock() if now is None else now
+        self._gripper_deadline(now)
         old = self.frame
         if old and frame["boot"] == old["boot"] and not newer(frame["seq"], old["seq"]):
             return False
@@ -153,6 +206,9 @@ class VirtualController:
             self.settled_samples.append((now, frame["q"]))
             self.settled_samples = [sample for sample in self.settled_samples if now - sample[0] <= .8]
         self.frame, self.received_at = frame.copy(), now
+        if (not input_lost and self.gripper_state == "OPEN_READY" and not frame["b"]
+                and old is not None and old["boot"] == frame["boot"] and old["bc"] == frame["bc"]):
+            self.gripper_released = True
         if self.owner == "REPLAY" or not self.enabled or restart or input_lost:
             return True
         self._track_wrist(old)
@@ -161,9 +217,7 @@ class VirtualController:
         if any(delta >= 2**31 for delta in deltas.values()):
             self.hold("按钮计数异常，请重新初始化", disable=True)
             return True
-        if deltas["bc"] % 2:
-            self.open_req = 1. - self.open_req
-            self.event("GRIPPER", "虚拟夹爪" + ("打开" if self.open_req else "闭合"))
+        self._gripper_clicks(deltas["bc"], frame, now)
         if deltas["ac"] % 2:
             if self.armed:
                 self.hold("A 点击：跟随已暂停，B 仍可切换夹爪")
@@ -234,8 +288,10 @@ class VirtualController:
         return mean([sample[1] for sample in recent])
 
     def enable_blockers(self):
-        if self.owner == "REPLAY" or self.armed:
-            return ["请先暂停跟随或停止历史回放，再启用并回初始"]
+        if self.owner == "REPLAY" or self.enabled:
+            return ["请先停止控制或历史回放，再初始化"]
+        if self.gripper_state != "OPEN_READY" or self.open_out != 1 or not self.gripper_released:
+            return ["等待夹爪达到软件打开目标，并松开 B"]
         try:
             self.settled_reference()
         except ValueError as error:
@@ -256,15 +312,17 @@ class VirtualController:
         return "READY", self.enable_blockers() or ["A 点击开始跟随；B 点击开合夹爪"]
 
     def enable(self):
-        if self.owner == "REPLAY" or self.armed:
-            raise ValueError("请先暂停跟随或停止历史回放，再启用并回初始")
+        if self.owner == "REPLAY" or self.enabled:
+            raise ValueError("请先停止控制或历史回放，再初始化")
+        if self.gripper_state != "OPEN_READY" or self.open_out != 1 or not self.gripper_released:
+            raise ValueError("等待夹爪达到软件打开目标，并松开 B")
         if not self.valid():
             raise ValueError("需要有效、已完成校准的真实 IMU")
         reference = self.settled_reference()
         self.q_req = [0., 45., 45.]
         self.q_out = self.q_req[:]
         self.velocity = [0., 0., 0.]
-        self.open_req = self.open_out = 1.
+        self.release_gripper("INITIALIZE")
         self.reference_quaternion = reference
         self.angle_ambiguous = False
         self.click_baseline = {key: self.frame[key] for key in ("ac", "bc")}
@@ -283,7 +341,7 @@ class VirtualController:
             raise ValueError("请先停止控制或回放")
         self.q_req = [0., 45., 45.]
         self.q_out = self.q_req[:]
-        self.open_req = self.open_out = 1.
+        self.release_gripper("RESET")
         self.velocity = [0., 0., 0.]
         self.angle_ambiguous = False
         self.event("RESET", "虚拟目标已复位至 0/45/45°")
@@ -321,6 +379,9 @@ class VirtualController:
         self.last_tick = now
         if self.owner == "REPLAY":
             return
+        if self.gripper_state == "HISTORY" and not self.enabled:
+            return
+        self._gripper_deadline(now)
         dt = max(0., min(elapsed, .05))
         if not self.valid(now):
             if self.enabled:
@@ -328,6 +389,7 @@ class VirtualController:
         elif elapsed > .1:
             if self.enabled:
                 self.hold("控制周期超时，跟随已暂停；点击 A 继续")
+                self.release_gripper("CONTROL_OVERRUN")
         elif self.enabled:
             if self.armed and not self.angle_ambiguous:
                 self.q_out[0], self.velocity[0] = self._slew(self.q_out[0], self.q_req[0], self.velocity[0],
@@ -338,8 +400,17 @@ class VirtualController:
                     min(self.config["max_acceleration_deg_s2"][1:]), dt)
                 self.q_out[1] = self.q_out[2] = 45. + pitch
                 self.velocity[1] = self.velocity[2] = velocity
-            change = dt / .2
-            self.open_out += max(-change, min(change, self.open_req - self.open_out))
+        # Protection and release continue even with attitude control disabled.
+        change = dt / .2
+        self.open_out += max(-change, min(change, self.open_req - self.open_out))
+        if abs(self.open_out - self.open_req) < 1e-9:
+            self.open_out = self.open_req
+            if self.gripper_state == "OPENING" and self.open_out == 1:
+                self.gripper_state = "OPEN_READY"
+                self.gripper_released = False
+                self.event("GRIPPER_OPEN_TARGET", "软件打开目标已到达；等待新的释放后点击")
+            elif self.gripper_state == "CLOSING" and self.open_out == 0:
+                self.gripper_state = "CLOSED"
 
     def joint_state(self):
         return {"requested": pose(self.q_req, self.open_req), "output_target": pose(self.q_out, self.open_out),

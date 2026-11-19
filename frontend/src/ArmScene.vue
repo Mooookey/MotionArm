@@ -6,7 +6,7 @@ import { fallbackGeometry, tipPosition } from './geometry'
 import { sceneResizeAction, type SceneSize } from './displayStability'
 import type { Geometry, Pose } from './types'
 
-const props = defineProps<{ pose: Pose; requested: Pose; geometry?: Geometry; muted: boolean; history: boolean; ghost: boolean; axes: boolean; dimensions: boolean; reference?: boolean }>()
+const props = defineProps<{ pose: Pose; requested: Pose; geometry?: Geometry; muted: boolean; history: boolean; ghost: boolean; axes: boolean; dimensions: boolean; reference?: boolean; executorLabel?: string; targetAvailable?: boolean; physical?: boolean }>()
 const host = ref<HTMLDivElement>()
 const error = ref('')
 const view = ref('iso')
@@ -184,7 +184,7 @@ onMounted(() => {
     const draw = () => {
       frame = requestAnimationFrame(draw)
       applyPose(body, props.pose); applyPose(ghostBody, props.requested)
-      ghostBody.root.visible = props.ghost && !props.muted && !props.history
+      ghostBody.root.visible = props.ghost && !props.muted && !props.history && props.targetAvailable !== false
       for (const entry of materials) entry.material.color.setHex(props.muted ? 0x52616b : entry.color)
       for (const axes of axisHelpers) axes.visible = props.axes
       for (const group of dimensions) group.visible = props.dimensions
@@ -214,9 +214,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="scene-frame">
-    <div ref="host" class="scene-canvas" :class="{ unavailable: error }" role="img" aria-label="机械臂虚拟关节目标三维估算预览"></div>
+    <div ref="host" class="scene-canvas" :class="{ unavailable: error }" role="img" aria-label="机械臂软件关节目标三维估算预览，无实体位置反馈"></div>
     <div v-if="error" class="webgl-error"><span>◇</span><strong>三维视图不可用</strong><p>三维渲染暂不可用，数值状态台仍可使用。</p><small>{{ error }}</small></div>
-    <div class="scene-title"><span class="eyebrow">{{ history ? 'RECORDED MOTION' : 'VIRTUAL EXECUTOR' }}</span><strong>{{ history ? '历史回放' : '虚拟关节目标／估算预览' }}</strong><span v-if="muted && !history" class="scene-stale">{{ reference ? '参考姿态 · 尚无有效输入' : '目标已保持 · 实时输入失效' }}</span></div>
+    <div class="scene-title"><span class="eyebrow">{{ history ? 'RECORDED MOTION' : physical ? 'ROBOT / PWM LOCKED' : 'VIRTUAL EXECUTOR' }}</span><strong>{{ history ? '历史目标回放 · 虚拟预览' : targetAvailable === false ? '参考姿态 · 尚无执行端目标' : (executorLabel ?? '虚拟执行端') + '软件目标／估算预览' }}</strong><span v-if="muted && !history" class="scene-stale">{{ reference || targetAvailable === false ? '参考预览 · 不代表实体已接纳' : '历史接收目标 · 实时输入失效' }}</span></div>
     <div class="camera-presets" aria-label="三维视角">
       <button v-for="[key, label] in [['iso', '等轴'], ['front', '正面'], ['side', '侧面'], ['top', '俯视'], ['fit', '适配模型']]" :key="key" :class="{ active: view === key }" @click="preset(key!)">{{ label }}</button>
     </div>

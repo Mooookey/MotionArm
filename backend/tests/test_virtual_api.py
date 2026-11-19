@@ -54,6 +54,8 @@ class VirtualApiTests(unittest.TestCase):
 
     def inject(self, seconds=.04, **changes):
         self.clock.now += seconds
+        if self.runtime.manager_token:
+            self.on_server(lambda: self.runtime.heartbeat(self.runtime.manager_token))
         self.current = {**self.current, "seq": (self.current["seq"]+1) % 2**32,
                         "ms": (self.current["ms"]+round(seconds*1000)) % 2**32, **changes}
         self.on_server(lambda: self.runtime.receive({"type": "frame", "frame": self.current}))
@@ -93,7 +95,7 @@ class VirtualApiTests(unittest.TestCase):
 
     def test_disconnected_schema_has_no_fake_angles_or_hardware_feedback(self):
         state = self.status()
-        self.assertEqual(state["schema_version"], 3)
+        self.assertEqual(state["schema_version"], 4)
         self.assertEqual(state["input"]["status"], "disconnected")
         self.assertEqual(state["input"]["attitude_representation"], ATTITUDE_REPRESENTATION)
         self.assertIsNone(state["imu"]["quaternion"])
@@ -109,7 +111,7 @@ class VirtualApiTests(unittest.TestCase):
             self.assertNotIn(removed, state["control"])
         for route in ("/api/virtual/enable", "/api/recordings/start"):
             self.assertEqual(self.client.post(route, json={"name": "invalid"}).status_code, 409)
-        for operation in ("arm", "manual-target", "heartbeat", "mock-teleop", "release"):
+        for operation in ("arm", "manual-target", "mock-teleop", "release"):
             response = self.client.post("/api/control/"+operation, json={"q_deg": [90]*4})
             self.assertEqual(response.status_code, 409)
             self.assertEqual(response.json()["detail"]["error_code"], "PHYSICAL_CONTROL_UNAVAILABLE")
@@ -121,7 +123,7 @@ class VirtualApiTests(unittest.TestCase):
         self.assertFalse(self.status()["control"]["can_enable"])
         self.assertEqual(self.client.post("/api/virtual/enable").status_code, 409)
         self.enable()
-        self.assertTrue(self.status()["control"]["can_enable"])
+        self.assertFalse(self.status()["control"]["can_enable"])
         self.inject(a=1)
         self.assertFalse(self.status()["control"]["can_enable"])
         self.assertEqual(self.client.post("/api/virtual/enable").status_code, 409)
@@ -215,7 +217,7 @@ class VirtualApiTests(unittest.TestCase):
         identifier = self.save_record()
         detail = self.client.get(f"/api/recordings/{identifier}").json()
         metadata = detail["metadata"]
-        self.assertEqual(metadata["schema_version"], 3)
+        self.assertEqual(metadata["schema_version"], 4)
         self.assertEqual(metadata["attitude_representation"], ATTITUDE_REPRESENTATION)
         self.assertEqual(metadata["controller_version"], MAPPING_VERSION)
         self.assertEqual(metadata["mounting"], MOUNTING)
@@ -358,7 +360,7 @@ class VirtualApiTests(unittest.TestCase):
         self.inject(ac=2)
         for _ in range(20):
             self.inject(a=0, b=0)
-        self.assertTrue(self.status()["control"]["can_enable"])
+        self.assertFalse(self.status()["control"]["can_enable"])
         self.client.post("/api/recordings/start", json={"name": "gate"})
         self.assertFalse(self.status()["control"]["can_enable"])
         self.assertEqual(self.client.post("/api/virtual/enable").status_code, 409)

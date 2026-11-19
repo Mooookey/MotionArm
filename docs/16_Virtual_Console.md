@@ -1,6 +1,6 @@
 # 真实 IMU 与虚拟机械臂控制台 · Attitude V3
 
-当前链路：MPU6050 → 腕端 ESP32 → USB → FastAPI → 虚拟控制器 → Vue / Three.js。输入来自真实 IMU，执行端为虚拟执行端；三维姿态与末端位置均为软件目标／估算预览，`measured=null`。当前界面没有模拟输入入口，也不会在断线时自动切换为模拟数据。
+虚拟执行端链路：MPU6050 → 腕端 ESP32 → USB → FastAPI → 虚拟控制器 → Vue / Three.js。输入来自真实 IMU，执行端为虚拟执行端；三维姿态与末端位置均为软件目标／估算预览，`measured=null`。当前界面没有模拟输入入口，也不会在断线时自动切换为模拟数据。
 
 ## 安装与启动
 
@@ -25,7 +25,7 @@ npm run dev
 
 ## 腕端固件与唯一 USB 协议
 
-`firmware/wearable` 为 USB 专用固件，无 ESP-NOW。MPU6050 地址及 WHO_AM_I 为 0x68，SDA21/SCL22，100kHz；A=GPIO25，B=GPIO26，低电平消抖按下边沿计数。
+`firmware/wearable` 保留以下 USB att:3 诊断，同时运行 ESP-NOW v2；实体无动力接入见 [当前执行端说明](17_No_Power_Executor.md)。MPU6050 地址及 WHO_AM_I 为 0x68，SDA21/SCL22，100kHz；A=GPIO25，B=GPIO26，低电平消抖按下边沿计数。
 
 ```powershell
 .\tools\build-local.ps1 -Action Build -Sketch wearable -ArduinoData C:\Users\21211\AppData\Local\Arduino15
@@ -50,11 +50,11 @@ npm run dev
 
 1. 连接腕端，等待输入有效。双按钮释放，保持舒适手势约 0.5 秒。后端要求连续窗口覆盖≥480ms、相邻样本≤100ms、三轴角速度模长<5°/s、窗口内最大三维姿态距离≤3°；仅绕 Z 转动也不能通过。
 2. 点击唯一入口“启用并回初始”。以符号对齐后的四元数均值建立本次会话参考，虚拟目标设为 0°/45°/45°、夹爪打开，等待 A 开始。尚未初始化时相对角显示“—”。
-3. A 点击开始／暂停，松开不暂停；B 点击切换虚拟夹爪，暂停时也可操作 B。没有模式切换或长按语义。
+3. A 点击开始／暂停，松开不暂停；B 点击切换虚拟夹爪，暂停时也可操作 B。首次闭合起最多5000ms，包含闭合推进且不可续期；到期强制打开，打开完整并收到新鲜释放后才接受下一次闭合点击。没有模式切换或长按语义。
 4. 按 `inverse(q_reference) ⊗ q_current` 计算相对姿态，再将 `[w,x,y,z]` 转成手腕坐标 `[w,−y,x,z]`，取 SO(3) 对数映射的 X/Y 分量作为 Roll/Pitch。Z 仅参与诊断与三维保护，不直接控制底座。
 5. 默认 5° 软死区后按角度跟随；Roll 控制底座，Pitch 以 1:1 协同控制大小臂。固定倾斜时模型到目标后停稳，输出受速度和加速度约束。
 6. 参考在暂停、触限、A/B 点击时保持不变。超限硬截住，退回有效角区后继续；回到启用手势请求回初始。相对总转角≥175°时保持转轴输出，回到参考≤90°后解除歧义。
-7. 软件停止、输入无效／过期或重启会禁用控制并清除会话参考，不自动恢复；需要重新初始化。虚拟夹爪状态保持，重新初始化才自动打开。
+7. 软件停止、输入无效／过期或重启会禁用控制并清除会话参考，不自动恢复；需要重新初始化。夹爪立即请求打开，打开推进独立于姿态启用状态。
 
 后端统一提供 `can_enable` 与阻塞原因，前端不另建稳定判定。跟随、录制、历史回放期间禁止重新初始化。
 
@@ -66,13 +66,13 @@ npm run dev
 
 折叠诊断区显示当前／参考四元数、手腕三轴相对旋转向量、传感器三轴角速度／加速度和拒绝原因。断线或过期值标为历史接收值，禁止用于控制。诊断展开和状态提示不自动重置相机。
 
-新录制使用 `schema_version=3`、`controller_version=coordinated-angle-v3`，保存真实输入、按钮、映射状态、请求／输出目标、固定安装与参考四元数。JSON 保留完整数据，CSV 展开四元数及三轴诊断，不含旧事件／模式列。最长10分钟，输入失效、断线、重启中断归档。
+新录制使用 `schema_version=4`、`controller_version=coordinated-angle-v3`，保存真实输入、按钮、映射状态、请求／输出目标、固定安装与参考四元数。JSON 保留完整数据，CSV 展开四元数及三轴诊断，不含旧事件／模式列。最长10分钟，输入失效、断线、重启中断归档。
 
 历史回放独占 REPLAY 控制权，离线也可运行。旧录制保持原数据：几何与角度约定明确的虚拟记录按已保存目标回放，不重新解算旧 IMU；语义不明确的记录只查看／导出。缺口不插值，中断记录不能连续自动回放。历史模式仍标注独立的实时腕端诊断。
 
 ## 接口与验证
 
-`GET /api/status` 与 `/ws/telemetry` 使用 `schema_version=3`，包含 `input/imu/buttons/executor/control/joint_state/recording/replay`。`imu.quaternion` 是当前传感器姿态，`control.follow.reference_quaternion` 是会话参考，`delta_rotation_vector_deg` 是手腕轴三维相对旋转向量。`requested/output_target/measured` 保留统一接口，当前实测字段为 null。
+`GET /api/status` 与 `/ws/telemetry` 使用 `schema_version=4`，包含 `input/imu/buttons/executor/control/joint_state/recording/replay`。`imu.quaternion` 是当前传感器姿态，`control.follow.reference_quaternion` 是会话参考，`delta_rotation_vector_deg` 是手腕轴三维相对旋转向量。`requested/output_target/measured` 保留统一接口，当前实测字段为 null。
 
 - `GET /api/input/ports`；`POST /api/input/connect {port}`、`/disconnect`。
 - `GET/POST /api/virtual/config`；`POST /api/virtual/enable`、`/stop`、`/reset`。旧 `/prepare` 与 `/neutral` 已移除。

@@ -2,10 +2,9 @@
   "baseline_id": "motionarm-2026-11-18-raised-transfer",
   "schema_version": 1,
   "purpose": "Recorded reference, not a verified operational firmware profile",
-  "current_sketch": "firmware/joint_demo_v2/joint_demo_v2.ino",
   "source_sha256": {
-    "firmware/joint_demo_v2/joint_demo_v2.ino": "5e89dbd246365930de6cdd9b32ea7b1f7efbc61fa4afd6ee6e0d666f561f2a65",
-    "firmware/joint_demo_v2/ArmDemo.h": "6a32d5554f4aae879361a04b6ac8aaba148bc2db125d0e0db3ff11a835e3f4d2"
+    "firmware/archive/joint_demo_v2/joint_demo_v2.ino": "5e89dbd246365930de6cdd9b32ea7b1f7efbc61fa4afd6ee6e0d666f561f2a65",
+    "firmware/archive/joint_demo_v2/ArmDemo.h": "6a32d5554f4aae879361a04b6ac8aaba148bc2db125d0e0db3ff11a835e3f4d2"
   },
   "evidence": {
     "upright_reference": "user calibrated reference",
@@ -159,10 +158,12 @@
     "channel": 12,
     "open_us": 1130,
     "empty_closed_us": 1630,
-    "demo_max_hold_ms": 3000,
-    "demo_watchdog_trigger_ms": 2950,
-    "manual_and_current_radio_profile_max_hold_ms": 700,
-    "loaded_grasp_verified": false
+    "loaded_grasp_verified": false,
+    "historical_demo_max_hold_ms": 3000,
+    "historical_demo_watchdog_trigger_ms": 2950,
+    "historical_manual_radio_hold_ms": 700,
+    "current_software_close_deadline_ms": 5000,
+    "current_policy_is_thermal_certification": false
   },
   "timings_ms": {
     "approach_base": 720,
@@ -173,5 +174,7 @@
     "close_settle": 160,
     "planned_closed_duration": 2600
   },
-  "archive_path": "E:\\学科文件\\嵌入式\\大作业\\机械臂开发\\归档_2026-11-18"
+  "archive_path": "E:\\学科文件\\嵌入式\\大作业\\机械臂开发\\归档_2026-11-18",
+  "historical_sketch": "firmware/archive/joint_demo_v2/joint_demo_v2.ino",
+  "current_integration": "firmware/robot/robot.ino (no-power only; historical poses are evidence, not an enabled calibration)"
 }
