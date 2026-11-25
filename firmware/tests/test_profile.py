@@ -67,5 +67,34 @@ class ProfileTests(unittest.TestCase):
                 generator.generate(p)
 
 
+class TrialProfileTests(unittest.TestCase):
+    def trial(self):
+        return json.loads((ROOT / "config/robot_trial.json").read_text(encoding="utf-8"))
+
+    def test_mapping_anchor_outside_operating_limits_is_preserved(self):
+        profile = self.trial()
+        header, identity = generator.generate(profile)
+        self.assertIn("{1630,1030}", header)
+        self.assertIn("{1570,1050}", header)
+        self.assertIn("{-3,42,42}", header)
+        self.assertIn("sha256:", identity)
+        self.assertEqual(header, (ROOT / "firmware/robot/PoweredTrialProfile.h").read_text(encoding="ascii"))
+        self.assertEqual(profile["shoulder_mapping"][0][0], 0)
+        self.assertGreater(profile["operating_limits_deg"][1][0], 0)
+
+    def test_trial_is_not_full_workspace_or_thermal_certification(self):
+        for key in ("full_workspace_verified", "load_verified", "thermal_safety_verified"):
+            p = self.trial();p[key] = True
+            with self.assertRaises(ValueError): generator.generate(p)
+
+    def test_widening_and_renewable_deadline_refused(self):
+        for key, value in (("operating_limits_deg", [[-45,45],[0,60],[0,60]]),
+                           ("speed_deg_s", 20), ("gripper_limit_ms", 700),
+                           ("shoulder_mapping", [[45,1030],[60,830]]),
+                           ("onsite_confirmation_required", False)):
+            p = self.trial();p[key] = value
+            with self.assertRaises(ValueError): generator.generate(p)
+
+
 if __name__ == "__main__":
     unittest.main()

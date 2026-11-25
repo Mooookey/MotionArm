@@ -66,13 +66,13 @@ npm run dev
 
 折叠诊断区显示当前／参考四元数、手腕三轴相对旋转向量、传感器三轴角速度／加速度和拒绝原因。断线或过期值标为历史接收值，禁止用于控制。诊断展开和状态提示不自动重置相机。
 
-新录制使用 `schema_version=4`、`controller_version=coordinated-angle-v3`，保存真实输入、按钮、映射状态、请求／输出目标、固定安装与参考四元数。JSON 保留完整数据，CSV 展开四元数及三轴诊断，不含旧事件／模式列。最长10分钟，输入失效、断线、重启中断归档。
+新录制使用 `schema_version=5`、`controller_version=coordinated-angle-v3`，保存真实输入、按钮、映射状态、请求／输出目标、固定安装与参考四元数；实体记录另外保存配置哈希、双机身份、PWM阶段及人工观察。既有schema2/3/4保持原样。JSON 保留完整数据，CSV 展开四元数及三轴诊断，不含旧事件／模式列。最长10分钟，输入失效、断线、重启中断归档。
 
 历史回放独占 REPLAY 控制权，离线也可运行。旧录制保持原数据：几何与角度约定明确的虚拟记录按已保存目标回放，不重新解算旧 IMU；语义不明确的记录只查看／导出。缺口不插值，中断记录不能连续自动回放。历史模式仍标注独立的实时腕端诊断。
 
 ## 接口与验证
 
-`GET /api/status` 与 `/ws/telemetry` 使用 `schema_version=4`，包含 `input/imu/buttons/executor/control/joint_state/recording/replay`。`imu.quaternion` 是当前传感器姿态，`control.follow.reference_quaternion` 是会话参考，`delta_rotation_vector_deg` 是手腕轴三维相对旋转向量。`requested/output_target/measured` 保留统一接口，当前实测字段为 null。
+`GET /api/status` 与 `/ws/telemetry` 使用 `schema_version=5`，包含 `input/imu/buttons/executor/control/joint_state/recording/replay`。`imu.quaternion` 是当前传感器姿态，`control.follow.reference_quaternion` 是会话参考，`delta_rotation_vector_deg` 是手腕轴三维相对旋转向量。`requested/output_target/measured` 保留统一接口，当前实测字段为 null。实体空载输出阶段见 [有动力接口](18_Powered_Empty_Trial.md)，历史只在停止并断开实体管理后虚拟回放。
 
 - `GET /api/input/ports`；`POST /api/input/connect {port}`、`/disconnect`。
 - `GET/POST /api/virtual/config`；`POST /api/virtual/enable`、`/stop`、`/reset`。旧 `/prepare` 与 `/neutral` 已移除。

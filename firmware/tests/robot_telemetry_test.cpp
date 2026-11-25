@@ -1,4 +1,5 @@
 #include "../robot/RobotTelemetry.h"
+#include "../robot/PoweredTrialProfile.h"
 #include <cassert>
 #include <iostream>
 #include <cstring>
@@ -31,4 +32,15 @@ int main() {
     std::cerr<<"line="<<(end-start+1)<<"\n";assert(end-start+1<=512);start=end+1;
   }
   assert(batch.valid);assert(batch.length*5+1000<11520);
+  robot::PoweredOutput out(kPoweredTrialProfile);out.prepared=out.committed=out.powerConfirmed=true;
+  out.stage=robot::PoweredOutput::Stage::Holding;out.lastWriteMs=out.writeErrors=UINT32_MAX;
+  for(auto &v:out.ticks)v=4095;
+  robot::TelemetryBatch powered;
+  powered.format(c,UINT32_MAX,"r-ffffffff",UINT32_MAX,seq,"C0:CD:D6:D0:9B:54",true,true,
+    UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,&out);
+  std::cerr<<"Powered worst snapshot bytes="<<powered.length<<" valid="<<powered.valid<<"\n";
+  assert(powered.valid);assert(powered.length*5+2000<23040);
+  for(const char *start=powered.data;*start;) {
+    const char *end=std::strchr(start,'\n');assert(end);assert(end-start+1<=512);start=end+1;
+  }
 }

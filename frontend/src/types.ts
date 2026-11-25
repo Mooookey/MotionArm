@@ -53,8 +53,24 @@ export interface FollowState {
   pitch_weights: [number, number]
   pitch_limits_deg: [number, number]
 }
+export interface PoweredOutput {
+  profile_hash: string
+  stage: 'locked' | 'holding' | 'unknown' | 'disabled'
+  pwm_ticks: [number, number, number, number] | null
+  last_write_ms: number | null
+  write_errors: number
+  pwm_enabled: boolean | null
+  committed: boolean
+  trial_limits_deg: [number, number][]
+  max_velocity_deg_s: number
+  max_acceleration_deg_s2: number
+  power_confirmed: boolean
+  prepared: boolean
+  diagnostic_active: boolean
+}
+export interface AxisAcceptance { axis: string; passed: boolean; note: string; [key: string]: unknown }
 export interface Telemetry {
-  schema_version: 4
+  schema_version: 5
   source: 'wearable'
   config_id?: string
   server_time_ms: number
@@ -65,7 +81,8 @@ export interface Telemetry {
     wireless_fresh?: boolean
     attitude_representation: 'quaternion_sensor_to_world_v3'
   }
-  executor: { kind: 'virtual' | 'robot_no_power'; label: string; mode: string; identity: string | null; output_locked: boolean; connected: boolean; port?: string | null; age_ms?: number | null }
+  executor: { kind: 'virtual' | 'robot_no_power' | 'robot_powered'; label: string; mode: string; identity: string | null; output_locked: boolean; connected: boolean; port?: string | null; age_ms?: number | null; boot_id?: string | number | null; profile_hash?: string | null; protocol_version?: number; output?: PoweredOutput | null; acceptance?: AxisAcceptance[] }
+  output?: PoweredOutput | null
   health?: { wireless?: { status: string; received: number; rejected: number; duplicates: number; out_of_order: number }; pca_readable?: boolean; [key: string]: unknown } | null
   gripper: GripperState | null
   imu: ImuState
@@ -80,6 +97,7 @@ export interface Telemetry {
   }
   joint_state: {
     requested: Pose | null; output_target: Pose | null; measured: null
+    last_committed_target?: Pose | null
     limits: boolean[]; velocity_deg_s: number[]
   }
   recording: { active: boolean; record_id: string | null; frames: number }
@@ -89,7 +107,8 @@ export interface Telemetry {
 export interface GripperState {
   state: string
   requested_open_ratio: number
-  output_open_ratio: number
+  output_open_ratio: number | null
+  last_committed_open_ratio?: number | null
   limit_ms: 5000
   elapsed_ms: number
   remaining_ms: number | null

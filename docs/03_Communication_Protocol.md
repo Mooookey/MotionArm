@@ -1,6 +1,6 @@
-# 当前通信协议：ESP-NOW v2 / robot USB v2
+# 当前通信协议：ESP-NOW v2 / robot USB v2、v3
 
-本协议仅用于 [第一阶段无动力执行端](17_No_Power_Executor.md)。旧24字节协议、deadman、mode和速度控制设计见 [归档](archive/Communication_Protocol_Pre_V2.md)，当前两端拒绝旧协议。
+ESP-NOW v2同时用于无动力与 [小范围有动力空载](18_Powered_Empty_Trial.md)，无线字节和控制坐标不变。robot USB v2仅用于无动力，显式有动力构建使用下述v3。旧24字节协议、deadman、mode和速度控制设计见 [归档](archive/Communication_Protocol_Pre_V2.md)，当前两端拒绝旧协议。
 
 ## ESP-NOW
 
@@ -44,6 +44,25 @@ robot使用115200 8N1、LF、每行最多512字节（含LF）、`v=2`。PC先发
 
 ## Web
 
-`GET /api/status`与`/ws/telemetry`为schema4，保留input/imu/buttons/executor/control/joint_state/recording/replay，新增health/gripper。requested/output_target均是软件目标，实体无动力时来自robot，measured始终null。
+`GET /api/status`与`/ws/telemetry`及新录制为schema5，保留input/imu/buttons/executor/control/joint_state/recording/replay、health/gripper，新增有动力output和人工观察记录。requested/output_target均是软件目标，实体时来自robot，measured始终null。旧schema2/3/4录制按原数据保留，只按明确的保存目标在虚拟执行端回放。
 
 执行端选择、连接、初始化和停止使用`/api/executor/*`，虚拟旧接口仅在virtual模式可用。浏览器管理心跳250ms/750ms租约；后端→robot心跳100ms，robot本地300ms失效。实时按钮和目标只走ESP-NOW。
+
+## 有动力 robot USB v3
+
+仅显式 `RobotMode powered` 构建使用230400 8N1、LF、每行含LF≤512字节。hello/hello_ack的v和protocol_version均为3，mode=robot_powered，额外返回profile_hash；启动output_locked=true。客户端须匹配实际MAC、模式、版本和本次配置哈希，不降级连接。hello停止并清参考，不恢复使能或控制权，已经保持的承重PWM按当前输出状态如实报告。
+
+v3完整快照5Hz，在v2相同语义的五组外增加output，同boot/snapshot_id/t_ms后才原子发布。总预算3072字节，最大5Hz数据率15360 bytes/s，230400 8N1容量23040 bytes/s，其余留给管理与优先事件。v2仍保持原2048预算和115200。
+
+output包含profile_hash、stage（locked/holding/disabled/unknown）、pwm_ticks（底座/大臂/小臂/夹爪顺序）、last_write_ms（robot单调毫秒）、write_errors、pwm_enabled、committed、trial_limits_deg、max_velocity_deg_s、max_acceleration_deg_s2、power_confirmed、prepared、diagnostic_active。committed表示曾成功提交过软件目标；unknown/disabled时保留的PWM计数为历史值，Web当前output_target为null、last_committed_target保留最后成功目标。unknown时PWM是否有效为未知，不能写为已禁能或已保持；power_confirmed是本会话人工确认，不是电压测量。
+
+管理动作prepare、enable_output、test_joint、disable_output、init携带session_id、递增seq、当前boot_id、profile_hash和1–64字符request_id。相同ID与相同内容只确认原请求，不重做动作；不同内容复用ID拒绝。心跳与stop不构成运动目标流。
+
+- prepare检查逻辑健康与当前状态，建立受看门狗约束的管理准备。
+- enable_output需supported、power_confirmed、startup_aligned三个明确true，独立于初始化；提交0/45/45/open后暂停保持。未作现场确认时必须拒绝。
+- test_joint仅axis=0/1/2与相对启动位offset_deg在±3°内的单次受限轨迹，禁止运行中或已有诊断时插入连续目标。
+- init由robot稳定采集参考，从已提交目标限速回启动位；不允许参考与目标跳变。
+- stop清参考、停止推进并开爪，承重轴保持最后成功目标；不设FULL_OFF。
+- disable_output需supported=true；正常结束先停止并到软件打开目标，再在托住后释放PWM。输出未知的人工处置不能被视为自动恢复许可。
+
+Web对应POST `/api/executor/prepare|enable-output|test-joint|disable-output|acceptance`。prepare建立页面管理令牌，后续运动管理绑定boot、profile_hash与当前manager_token。停止或会话失效后，disable-output仍可凭当前USB会话、boot、配置及supported=true明确释放PWM，不恢复控制权。ACK表示接纳，后续快照表示软件输出阶段，实物动作只由现场观察记录，均不等于编码器反馈。

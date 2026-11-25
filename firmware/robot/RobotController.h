@@ -19,6 +19,27 @@ class Controller {
   GripState gripState = GripState::OpenReady;
   uint32_t gripCycle = 0, gripStarted = 0, eventSeq = 0, dropped = 0, duplicates = 0, restarts = 0;
   uint32_t eventDrops = 0, outOfOrder = 0;
+  bool trial = false, initializing = false, diagnosticActive = false;
+  float low[3] = {-45,0,0}, high[3] = {45,60,60}, speeds[3] = {20,15,15};
+  float acceleration = 60, gripRate = 5;
+  void configureTrial() {
+    trial=true;low[0]=-3;high[0]=3;low[1]=low[2]=42;high[1]=high[2]=48;
+    for(float &v:speeds)v=2;
+    acceleration=5;gripRate=1;
+  }
+  void managementEvent(const char *code,uint32_t now) { event(code,now); }
+  void seedStartupOutput() {
+    qReq[0]=qOut[0]=0;qReq[1]=qReq[2]=qOut[1]=qOut[2]=45;
+    for(float &v:velocity)v=0;
+    openReq=openOut=1;gripState=GripState::OpenReady;gripReady_=false;
+  }
+  bool testJoint(unsigned axis,float offset,uint32_t now) {
+    if (!trial || axis>2 || !std::isfinite(offset) || std::fabs(offset)>3 ||
+        enabled || armed || diagnosticActive || fault || !valid(now) || openOut<1) return false;
+    stop("DIAGNOSTIC",now);
+    qReq[axis]=(axis?45:0)+offset;diagnosticActive=true;reason="DIAGNOSTIC";
+    lastTick_=now;haveTick_=true;event("JOINT_TEST",now);return true;
+  }
 
   uint32_t ageMs(uint32_t now) const {
     if (!haveInput) return UINT32_MAX;
@@ -58,16 +79,19 @@ class Controller {
     }
     normalize(sum); std::memcpy(reference, sum, sizeof(reference));
     hasReference = enabled = true; armed = ambiguous = false;
-    qReq[0] = qOut[0] = 0; qReq[1] = qReq[2] = qOut[1] = qOut[2] = 45;
+    qReq[0] = 0; qReq[1] = qReq[2] = 45;
+    if(!trial){qOut[0]=0;qOut[1]=qOut[2]=45;}
+    initializing=trial && (std::fabs(qOut[0])>.001f || std::fabs(qOut[1]-45)>.001f || std::fabs(qOut[2]-45)>.001f);
+    diagnosticActive=false;
     for (float &v : velocity) v = 0;
-    openReq = openOut = 1; gripState = GripState::OpenReady; gripReady_ = true;
+    openReq = 1;if(!trial)openOut=1;gripState = GripState::OpenReady; gripReady_ = true;
     baselineA_ = input.ac; baselineB_ = input.bc;
-    lastTick_ = now; haveTick_ = true; reason = "INITIALIZED_PAUSED";
+    lastTick_ = now; haveTick_ = true; reason = initializing ? "INITIALIZING" : "INITIALIZED_PAUSED";
     updateRotation(); event("INITIALIZE", now); return true;
   }
   void stop(const char *why, uint32_t now) {
     const bool changed = enabled || armed || hasReference || std::strcmp(reason, why) != 0;
-    freeze(); enabled = false; hasReference = false; ambiguous = false;
+    freeze(); enabled = false; hasReference = false; ambiguous = false;initializing=diagnosticActive=false;
     reason = why;
     if (changed) stableCount_ = 0;
     requestOpen(why, now);
@@ -104,39 +128,47 @@ class Controller {
     if (still) addStable(arrived);
     const uint32_t da = input.ac - baselineA_, db = input.bc - baselineB_;
     baselineA_ = input.ac; baselineB_ = input.bc;
+    // Counters are part of the session even while paused/uninitialized. Never
+    // let a diagnostic/prepared lease survive a backward counter in one boot.
+    if(!restart && (da>=0x80000000UL || db>=0x80000000UL)) {
+      input.flags &= ~motionarm::imuValid;stop("BUTTON_COUNTER_INVALID",now);return true;
+    }
     // Release rearming is allowed after STOP as well: it never reenables follow.
     if (valid(now) && gripState == GripState::OpenReady && !gripReady_ &&
         !(input.flags & motionarm::buttonB) && db == 0) gripReady_ = true;
     if (!enabled || restart || lost || !valid(now)) return true;
-    if (da >= 0x80000000UL || db >= 0x80000000UL) { stop("BUTTON_COUNTER_INVALID", now); return true; }
     trackWrist(old.q, now);
     if (db > 1) { requestOpen("BUTTON_EVENTS_COALESCED", now); event("BUTTON_EVENTS_COALESCED", now); }
     else if (db == 1) clickGrip(now);
-    if (da & 1) {
+    if ((da & 1) && !initializing) {
       if (armed) { freeze(); reason = "A_PAUSED"; event("PAUSE", now); }
       else { armed = true; reason = "FOLLOWING"; event("RUN", now); }
     }
     if (armed && !ambiguous) mapRequests();
     return true;
   }
-  void tick(uint32_t now) {
+  void tick(uint32_t now, bool advanceOutputs=true) {
     serviceDeadline(now);
     const uint32_t elapsed = haveTick_ ? uint32_t(now - lastTick_) : 0;
-    if (enabled && !valid(now)) stop("INPUT_TIMEOUT", now);
+    if ((enabled || diagnosticActive) && !valid(now)) stop("INPUT_TIMEOUT", now);
     if (!haveTick_) { lastTick_ = now; haveTick_ = true; return; }
     if (elapsed < 20) return;
     lastTick_ = now;
-    if (enabled && elapsed > 100) {
-      freeze(); reason = "CONTROL_OVERRUN"; requestOpen(reason, now); event(reason, now);
+    if(!advanceOutputs)return;
+    if ((enabled || diagnosticActive) && elapsed > 100) {
+      freeze(); initializing=diagnosticActive=false;reason = "CONTROL_OVERRUN"; requestOpen(reason, now); event(reason, now);
     }
     const float dt = float(elapsed > 50 ? 50 : elapsed) / 1000;
-    if (enabled && armed && !ambiguous && !fault) {
-      slew(qOut[0], qReq[0], velocity[0], -45,45,20,60,dt);
-      slew(qOut[1], qReq[1], velocity[1], 0,60,15,60,dt);
-      qOut[2] = qOut[1]; velocity[2] = velocity[1];
+    if (((enabled && (armed || initializing) && !ambiguous) || diagnosticActive) && !fault) {
+      for(unsigned i=0;i<3;++i) slew(qOut[i],qReq[i],velocity[i],low[i],high[i],speeds[i],acceleration,dt);
+      if(initializing || diagnosticActive) {
+        bool reached=true;for(unsigned i=0;i<3;++i)if(std::fabs(qOut[i]-qReq[i])>.001f)reached=false;
+        if(reached){for(float &v:velocity)v=0;initializing=diagnosticActive=false;
+          reason=enabled?"INITIALIZED_PAUSED":"DIAGNOSTIC_COMPLETE";event(reason,now);}
+      }
     }
     // Release advances regardless of following, control ownership or faults.
-    openOut += clamp(openReq-openOut, -dt/.2f, dt/.2f);
+    openOut += clamp(openReq-openOut, -dt*gripRate, dt*gripRate);
     if (openOut >= 1-1e-6f) {
       openOut = 1;
       if (gripState == GripState::Opening) {
@@ -253,7 +285,7 @@ class Controller {
   void mapRequests() {
     const float roll=std::copysign(std::fmax(0.0f,std::fabs(rotation[0])-5),rotation[0]);
     const float pitch=-std::copysign(std::fmax(0.0f,std::fabs(rotation[1])-5),rotation[1]);
-    qReq[0]=clamp(roll,-45,45);qReq[1]=qReq[2]=45+clamp(pitch,-45,15);
+    qReq[0]=clamp(roll,low[0],high[0]);qReq[1]=clamp(45+pitch,low[1],high[1]);qReq[2]=clamp(45+pitch,low[2],high[2]);
   }
   static void slew(float &current,float requested,float &v,float low,float high,float speed,float accel,float dt) {
     const float error=requested-current;

@@ -8,14 +8,29 @@ import TelemetryChart from './TelemetryChart.vue'
 import { fallbackGeometry, poseAt, referencePose } from './geometry'
 import { nextAccelerationWarning } from './displayStability'
 import { buttonTelemetryFresh, coordinatedFollowLabel } from './controlPresentation'
+import { canViewHistory, outputStageLabel, poweredBinding } from './powered'
 import type { Geometry, Point, Preflight, Recording, RecordingDetail, SimulationConfig } from './types'
 
 const device = useDevice(), route = useRoute(), router = useRouter()
 const settings = computed(() => route.path === '/settings')
 const library = computed(() => route.path === '/recordings')
 const state = computed(() => device.snapshot)
-const executorKind = ref<'virtual' | 'robot_no_power'>('virtual')
-const robot = computed(() => state.value?.executor.kind === 'robot_no_power')
+const executorKind = ref<'virtual' | 'robot_no_power' | 'robot_powered'>('virtual')
+const robot = computed(() => state.value?.executor.kind === 'robot_no_power' || state.value?.executor.kind === 'robot_powered')
+const powered = computed(() => state.value?.executor.kind === 'robot_powered')
+const output = computed(() => state.value?.output ?? state.value?.executor.output)
+const outputLabel = computed(() => powered.value && (!device.fresh || !state.value?.executor.connected) ? '输出状态未确认 · 等待新鲜执行端遥测' : outputStageLabel(output.value?.stage))
+const supportsReady = ref(false), alignedReady = ref(false), powerReady = ref(false), releaseSupported = ref(false)
+const testAxis = ref('base'), testDelta = ref(3), acceptedAxis = ref('base'), acceptanceNote = ref('')
+const acceptancePassed = ref(true)
+const pwmActive = computed(() => output.value?.pwm_enabled === true)
+const canReleaseOutput = computed(() => powered.value && device.fresh && !!state.value?.executor.connected && ['holding', 'unknown'].includes(output.value?.stage ?? ''))
+const poweredBound = () => poweredBinding(state.value, device.managementPayload())
+const canPrepare = computed(() => powered.value && device.fresh && !!state.value?.executor.connected && !state.value?.control.enabled && !state.value?.recording.active && !state.value?.replay.active && output.value?.stage !== 'unknown')
+const canEnableOutput = computed(() => canPrepare.value && output.value?.prepared && !pwmActive.value && supportsReady.value && alignedReady.value && powerReady.value)
+const canTest = computed(() => canPrepare.value && output.value?.prepared && pwmActive.value && !output.value.diagnostic_active)
+const canObserve = computed(() => powered.value && device.fresh && !!state.value?.executor.connected && output.value?.prepared && pwmActive.value && !output.value.diagnostic_active)
+const acceptanceLabels: Record<string, string> = { base: '底座', shoulder: '大臂', elbow: '小臂', coordinated: '整臂协同', gripper: '夹爪', stop_protection: '停止与断链保护' }
 const executorLabel = computed(() => state.value?.executor.label ?? '虚拟执行端')
 const hasTargets = computed(() => history.value || !!state.value?.joint_state.output_target)
 const displayRequested = computed(() => history.value ? requested.value : state.value?.joint_state.requested)
@@ -24,6 +39,7 @@ const gripper = computed(() => state.value?.gripper)
 const gripperReasons: Record<string, string> = { TIME_LIMIT: '达到 5 秒期限', TIMEOUT: '达到 5 秒期限', CONTROL_DISABLED: '控制已禁用', INITIALIZE: '重新初始化', RESET: '软件复位', STOP: '软件停止', INPUT_INVALID: '输入无效', INPUT_STALE: '输入过期', LINK_LOST: '无线断线', MANAGER_TIMEOUT: '管理会话超时', OWNER_CHANGED: '控制权变化', RESTART: '设备重启' }
 const ports = ref<Array<{ device: string; description: string }>>([])
 const port = ref(''), busy = ref(false), error = ref(''), message = ref('')
+let managementEpoch = 0
 const ghost = ref(false), axes = ref(false), dimensions = ref(false)
 const chartType = ref<'imu' | 'joints'>('imu'), paused = ref(false), frozen = ref<Point[]>([])
 const recordings = ref<Recording[]>([]), detail = ref<RecordingDetail | null>(null)
@@ -47,7 +63,7 @@ const buttonsFresh = computed(() => buttonTelemetryFresh(device.fresh, state.val
 const relativeMapping = computed(() => state.value?.control.mapping === 'COORDINATED_RELATIVE_ANGLE')
 const runLabel = computed(() => device.fresh ? coordinatedFollowLabel(!!state.value?.control.enabled, !!state.value?.control.armed) : '等待有效遥测')
 const history = computed(() => preview.value || !!state.value?.replay.active)
-const historicalFrames = computed(() => ['virtual', 'robot_no_power'].includes(String(detail.value?.metadata?.executor)) &&
+const historicalFrames = computed(() => ['virtual', 'robot_no_power', 'robot_powered'].includes(String(detail.value?.metadata?.executor)) &&
   detail.value?.metadata?.angle_convention === 'base_yaw_shoulder_down_elbow_relative_down_gripper_open_ratio_v1'
   ? detail.value.frames.filter((f) => isPose(f.output_target) && isPose(f.requested)) : [])
 const previewResult = computed(() => poseAt(historicalFrames.value, cursor.value))
@@ -59,14 +75,14 @@ const geometry = computed<Geometry>(() => {
   if (state.value?.replay.active && state.value.replay.geometry) return state.value.replay.geometry
   return device.model?.geometry ?? fallbackGeometry
 })
-const activeLimits = computed(() => device.model?.config.limits_deg ?? defaultConfig.limits_deg)
+const activeLimits = computed(() => powered.value && output.value?.trial_limits_deg ? output.value.trial_limits_deg : device.model?.config.limits_deg ?? defaultConfig.limits_deg)
 const chartPoints = computed<Point[]>(() => preview.value ? historicalFrames.value.flatMap((f, index, all) => {
   const point: Point = { time: f.t_ms, roll: f.imu?.roll_deg ?? null, pitch: f.imu?.pitch_deg ?? null, requested: f.requested, output: f.output_target }
   return index && f.t_ms - all[index - 1]!.t_ms > 250 ? [{ time: f.t_ms - 1, roll: null, pitch: null, requested: null, output: null }, point] : [point]
 }) : paused.value ? frozen.value : device.points)
 const chartLabel = computed(() => preview.value ? '历史记录' : paused.value ? '已暂停查看' : chartType.value === 'imu'
   ? device.realReady ? '实时腕端' : '无有效实时输入' : state.value?.replay.active ? '历史目标回放' : device.fresh ? '实时目标' : '历史接收值')
-const canStop = computed(() => device.fresh && (!!state.value?.control.enabled || !!state.value?.replay.active || !!state.value?.recording.active))
+const canStop = computed(() => device.fresh && (!!state.value?.control.enabled || !!state.value?.replay.active || !!state.value?.recording.active || pwmActive.value || !!output.value?.prepared))
 const canRecord = computed(() => device.realReady && state.value?.control.enabled && !state.value.replay.active && !preview.value)
 const configLocked = computed(() => robot.value || !device.fresh || !!state.value?.control.enabled || !!state.value?.replay.active || !!state.value?.recording.active)
 const owner = computed(() => ({ NONE: '无控制权', WEARABLE: '手腕控制', REPLAY: '历史回放' })[state.value?.control.owner ?? 'NONE'] ?? '未知')
@@ -110,13 +126,54 @@ function selectExecutor() {
 }
 function initialize() {
   preview.value = false
+  const epoch = managementEpoch
   void act(async () => {
-    const response = await request<{ manager_token: string }>('/api/executor/initialize', {})
+    const response = await request<{ manager_token: string }>('/api/executor/initialize', powered.value ? poweredBound() : {})
+    if (epoch !== managementEpoch) return
     device.grantManagement(response.manager_token)
     await device.loadConfig()
   }, '已请求捕获稳定参考并设置 0° / 45° / 45°、夹爪打开目标；以执行端遥测为准。短按 A 开始。')
 }
-function stop() { device.releaseManagement(); void act(async () => { await request('/api/control/stop', {}) }, '已请求停止跟随并打开夹爪。') }
+function prepareOutput() {
+  const epoch = managementEpoch
+  void act(async () => {
+    const response = await request<{ manager_token: string }>('/api/executor/prepare', poweredBound())
+    if (epoch !== managementEpoch) return
+    device.grantManagement(response.manager_token)
+  }, '准备请求已接纳。输出状态以 robot 后续遥测为准；尚未授权 PWM。')
+}
+function enableOutput() {
+  void act(async () => {
+    if (!canEnableOutput.value) throw new Error('请先托住并对齐 0° / 45° / 45°、夹爪打开，现场确认动力已接通。')
+    await request('/api/executor/enable-output', { ...poweredBound(), supported: true, startup_aligned: true, power_confirmed: true })
+    supportsReady.value = alignedReady.value = powerReady.value = false
+  }, '使能请求已接纳，请观察实体是否保持启动姿态。ACK 不代表实体到位。')
+}
+function testJoint() {
+  void act(async () => { await request('/api/executor/test-joint', { ...poweredBound(), axis: ['base', 'shoulder', 'elbow'].indexOf(testAxis.value), offset_deg: testDelta.value }) }, '已接纳受限单轴检查，请现场观察方向和动作；以 robot 遥测确认输出提交。')
+}
+function acceptAxis() {
+  void act(async () => {
+    await request('/api/executor/acceptance', { ...poweredBound(), axis: acceptedAxis.value, passed: acceptancePassed.value, note: acceptanceNote.value.trim() })
+    acceptanceNote.value = ''
+  }, '已保存人工观察记录；不代表完整行程或承载验收。')
+}
+function disableOutput() {
+  void act(async () => {
+    if (!releaseSupported.value) throw new Error('释放承重轴 PWM 前，请先托住机械臂并确认。')
+    await request('/api/executor/disable-output', { ...poweredBound(), supported: true })
+    releaseSupported.value = false
+  }, '已请求释放 PWM。请确认 robot 输出遥测；人工断电时继续托住机械臂。')
+}
+function stop() {
+  ++managementEpoch
+  device.releaseManagement()
+  // STOP bypasses the normal busy gate; heartbeat loss remains a local fallback.
+  void request('/api/control/stop', {}).then(() => {
+    device.releaseManagement()
+    message.value = powered.value ? '已请求停止推进并开爪；承重轴保持最后提交目标。' : '已请求停止跟随并打开夹爪。'
+  }).catch((cause) => { error.value = cause instanceof Error ? cause.message : '停止请求失败；管理心跳已停止。' })
+}
 function reset() { void act(async () => { await request('/api/virtual/reset', {}) }, '已复位到 45° 仿真启动目标。') }
 function saveConfig() {
   void act(async () => { await request('/api/virtual/config', { ...form.value }); await device.loadConfig() }, '仿真参数已保存，需重新启用控制。')
@@ -128,6 +185,7 @@ function startRecording() {
 function stopRecording() { void act(async () => { await request('/api/recordings/stop', {}); await loadRecords() }, '录制已归档。') }
 function selectRecord(record: Recording) {
   void act(async () => {
+    if (!canViewHistory(state.value)) throw new Error('查看历史前，请停止实体控制并断开执行端管理连接；若需释放 PWM 或断电，先托住并确认。')
     if (state.value?.recording.active) throw new Error('请先结束当前录制，再进入历史预览。')
     if (state.value?.replay.active) throw new Error('请先停止正在进行的历史回放。')
     if (state.value?.control.enabled) { device.releaseManagement(); await request('/api/control/stop', {}) }
@@ -139,6 +197,7 @@ function selectRecord(record: Recording) {
 function exitPreview() { preview.value = false; preflight.value = null }
 function replayRecord() {
   void act(async () => {
+    if (robot.value || !canViewHistory(state.value)) throw new Error('历史仅在虚拟执行端回放。请先停止、断开实体管理，再显式切换虚拟执行端。')
     if (!detail.value) return
     const result = await request<Preflight>('/api/replays/preflight', { record_id: detail.value.id })
     preflight.value = result
@@ -149,6 +208,10 @@ function replayRecord() {
 }
 watch(() => device.model, (model) => { if (model) form.value = structuredClone(model.config) })
 watch(() => state.value?.executor.kind, (kind) => { if (kind) executorKind.value = kind })
+watch([() => state.value?.executor.kind, () => state.value?.executor.boot_id, () => state.value?.executor.profile_hash, () => device.fresh], () => {
+  ++managementEpoch
+  supportsReady.value = alignedReady.value = powerReady.value = releaseSupported.value = false
+})
 watch(() => route.path, () => { if (library.value) void loadRecords().catch(() => {}) })
 watch(() => state.value?.recording.active, (active, before) => { if (before && !active) void loadRecords().catch(() => {}) })
 let refreshTimer: ReturnType<typeof setInterval> | undefined
@@ -171,12 +234,12 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
         <RouterLink to="/recordings"><span>◷</span>录制与回放<small>02</small></RouterLink>
         <RouterLink to="/settings"><span>⚙</span>仿真设置<small>03</small></RouterLink>
       </nav>
-      <div class="sidebar-foot"><span class="connected-line"><i class="status-dot" :class="{ good: device.fresh }"></i>{{ device.fresh ? '本地服务已连接' : '等待本地服务' }}</span><small>FastAPI · Vue 3 · Three.js</small><p>真实传感输入<br>执行端目标与估算预览</p><span class="build-label">EXECUTOR CONSOLE / V4</span></div>
+      <div class="sidebar-foot"><span class="connected-line"><i class="status-dot" :class="{ good: device.fresh }"></i>{{ device.fresh ? '本地服务已连接' : '等待本地服务' }}</span><small>FastAPI · Vue 3 · Three.js</small><p>真实传感输入<br>执行端目标与估算预览</p><span class="build-label">EXECUTOR CONSOLE / V5</span></div>
     </aside>
     <div class="main-layout">
       <header class="topbar">
         <div class="breadcrumb">实验工作台 <span>/</span><strong>{{ settings ? '仿真设置' : library ? '录制与回放' : '实时控制台' }}</strong></div>
-        <div class="top-status"><span class="chip"><i class="status-dot" :class="{ good: device.realReady }"></i>真实 IMU 输入</span><span class="chip virtual-chip">◈ {{ executorLabel }}</span><button class="stop-button" :disabled="busy || !canStop" @click="stop">■ 停止</button></div>
+        <div class="top-status"><span class="chip"><i class="status-dot" :class="{ good: device.realReady }"></i>真实 IMU 输入</span><span class="chip virtual-chip">◈ {{ executorLabel }}</span><button class="stop-button" :disabled="!canStop" @click="stop">■ 停止</button></div>
       </header>
       <main>
         <div class="page-heading"><div><span class="eyebrow">MOTIONARM / {{ settings ? 'SIMULATION PROFILE' : library ? 'MOTION ARCHIVE' : 'LIVE TELEMETRY' }}</span><h1>{{ settings ? '仿真参数' : library ? '动作记录与回放' : '机械臂三维控制台' }}<span v-if="history" class="history-pill">历史回放</span></h1><p>{{ settings ? '独立仿真配置，不作为实体机械臂的安全标定。' : '真实手腕输入与执行端软件目标；无实体位置反馈。' }}</p></div><span class="session-indicator"><i class="status-dot" :class="{ good: device.realReady, warning: inputStatus === 'stale' }"></i>{{ inputLabel }}<small>{{ state?.input.port || 'USB / 未选择端口' }}</small></span></div>
@@ -187,15 +250,30 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
         <div v-if="message" class="notice success" role="status">{{ message }}<button aria-label="关闭提示" @click="message = ''">×</button></div>
 
         <section v-if="!settings" class="panel executor-panel">
-          <label>执行端 <select v-model="executorKind" :disabled="busy || !device.fresh || !!state?.control.enabled || !!state?.recording.active || !!state?.replay.active" @change="selectExecutor"><option value="virtual">虚拟执行端</option><option value="robot_no_power">实体执行端 · 无动力联调</option><option disabled>有动力执行 · 本轮不可用</option></select></label>
+          <label>执行端 <select v-model="executorKind" :disabled="busy || !device.fresh || !!state?.control.enabled || !!state?.recording.active || !!state?.replay.active || pwmActive && !!state?.executor.connected" @change="selectExecutor"><option value="virtual">虚拟执行端</option><option value="robot_no_power">实体执行端 · 无动力联调</option><option value="robot_powered">实体执行端 · 空载小范围</option></select></label>
           <span>{{ executorLabel }} · {{ state?.executor.identity || '身份待确认' }}</span>
-          <strong v-if="robot">硬件输出{{ state?.executor.output_locked ? '已锁定' : '状态异常' }} · 舵机动力电源保持关闭</strong>
+          <strong v-if="robot && !powered">硬件输出{{ state?.executor.output_locked ? '已锁定' : '状态异常' }} · 舵机动力电源保持关闭</strong>
+          <strong v-if="powered">{{ outputLabel }} · {{ state?.control.enabled ? '姿态控制已初始化' : '姿态推进未授权' }}</strong>
           <span v-if="robot">ESP-NOW {{ state?.input.wireless_fresh ? '数据新鲜' : '未确认/过期' }} · PCA9685 {{ state?.health?.pca_readable ? '逻辑可读' : '未确认' }}</span>
           <span v-if="robot">无线接收 {{ state?.health?.wireless?.received ?? '—' }} · 拒绝 {{ state?.health?.wireless?.rejected ?? '—' }} · 重复 {{ state?.health?.wireless?.duplicates ?? '—' }} · 倒序 {{ state?.health?.wireless?.out_of_order ?? '—' }}</span>
           <span>输入 boot {{ state?.input.boot_id ?? '—' }} · {{ robot ? '输入年龄（执行端上报）' : '输入年龄' }} {{ state?.input.age_ms == null ? '未知' : state.input.age_ms + ' ms' }}</span>
           <span v-if="robot">执行端遥测缓存 {{ state?.executor.age_ms == null ? '未知' : state.executor.age_ms + ' ms' }} · 无线传输年龄未知</span>
           <span v-if="robot">管理会话 {{ state?.health?.manager_active ? '有效' : '未取得或已停止' }}</span>
-          <small v-if="robot">仅检查逻辑请求与目标，不能据此确认舵机方向、行程或实体到位。</small>
+          <small v-if="robot">{{ powered ? 'PWM 提交与 ACK 均不代表实体到位；实际动作由现场观察记录。5V / 6A 为人工提供的电源额定值。' : '仅检查逻辑请求与目标，不能据此确认舵机方向、行程或实体到位。' }}</small>
+        </section>
+        <section v-if="powered && !settings" class="panel powered-panel" aria-labelledby="powered-heading">
+          <div class="panel-heading"><div><h2 id="powered-heading">空载输出操作</h2><p>底座 ±3° · 双臂 42–48° · 2°/s · 5°/s²；扩大范围需另行确认。</p></div><span class="tiny-tag">ROBOT USB V3 · 230400</span></div>
+          <div class="powered-summary"><span>robot boot <b>{{ state?.executor.boot_id ?? '—' }}</b></span><span>配置 <code>{{ output?.profile_hash ?? '尚未确认' }}</code></span><span>动力 <b>{{ output?.power_confirmed ? '现场已报告接通（无电压传感器）' : '未由本会话确认' }}</b></span><span>PWM <b>{{ !output || !state?.executor.connected || !device.fresh ? '未确认' : output.stage === 'unknown' ? '状态未知' : pwmActive ? '持续输出' : '未启用' }}</b></span><span>最后成功写入 <b>{{ output?.last_write_ms == null ? '—' : output.last_write_ms + ' ms · robot 时钟' }}</b></span><span>写入错误 <b>{{ output?.write_errors ?? '—' }}</b></span></div>
+          <p v-if="output?.stage === 'unknown'" class="inline-warning">PCA 通信异常，输出状态未知。不要依据软件判断保持或开爪成功；请现场托住并人工处置，禁止自动恢复。</p>
+          <div class="powered-steps">
+            <div><strong>1 · 准备</strong><p>确认板卡、配置和 PCA，输出保持当前状态。页面刷新后不自动恢复管理权。</p><button class="button secondary" :disabled="busy || !canPrepare" @click="prepareOutput">准备当前执行端</button></div>
+            <div><strong>2 · 首次使能前现场确认</strong><p>请先托住机械臂，对齐底座 0°、大臂 45°、小臂 45°、夹爪打开，再接通独立动力。首次 PWM 从未知位置不保证平滑。</p><label><input v-model="supportsReady" type="checkbox" :disabled="busy || pwmActive">已托住机械臂</label><label><input v-model="alignedReady" type="checkbox" :disabled="busy || pwmActive">已人工对齐启动姿态并打开夹爪</label><label><input v-model="powerReady" type="checkbox" :disabled="busy || pwmActive">现场已接通 5V / 6A 动力，可直接人工掐断</label><button class="button primary" :disabled="busy || !canEnableOutput" @click="enableOutput">使能 PWM 并暂停保持</button></div>
+            <div><strong>3 · 逐轴小范围检查</strong><p>依次完成底座、大臂、小臂。正常通电保持 PWM 后无需持续托扶。检查命令只走受限诊断入口。</p><label>关节<select v-model="testAxis" :disabled="busy || !canTest"><option value="base">底座</option><option value="shoulder">大臂</option><option value="elbow">小臂</option></select></label><label>相对启动目标<select v-model.number="testDelta" :disabled="busy || !canTest"><option :value="-3">−3°</option><option :value="0">回启动目标</option><option :value="3">+3°</option></select></label><button class="button secondary" :disabled="busy || !canTest" @click="testJoint">提交一次单轴检查</button></div>
+            <div><strong>4 · 人工观察记录</strong><p>每轴观察通过后才允许整臂跟随；记录只针对此次空载范围，不是传感器反馈。</p><label>已观察通过<select v-model="acceptedAxis" :disabled="busy || !canObserve"><option v-for="(label, key) in acceptanceLabels" :key="key" :value="key">{{ label }}</option></select></label><label>观察结果<select v-model="acceptancePassed" :disabled="busy || !canObserve"><option :value="true">通过本次空载检查</option><option :value="false">未通过</option></select></label><label>现场说明<input v-model="acceptanceNote" maxlength="240" placeholder="方向、动作与异常观察" :disabled="busy || !canObserve"></label><button class="button secondary" :disabled="busy || !canObserve || !acceptanceNote.trim()" @click="acceptAxis">保存人工观察</button><small v-for="item in state?.executor.acceptance ?? []" :key="item.axis">{{ acceptanceLabels[item.axis] ?? item.axis }} · {{ item.passed ? '通过' : '未通过' }} · {{ item.note }}</small></div>
+            <div><strong>5 · 结束与计划断电</strong><p>先停止跟随并请求开爪，承重轴继续保持。释放 PWM 或人工断电前，必须先托住；不要直接断电让机械臂下垂。</p><button class="button secondary" :disabled="!canStop" @click="stop">停止推进并请求开爪 · 保持 PWM</button><label><input v-model="releaseSupported" type="checkbox" :disabled="busy || !canReleaseOutput">已托住，可释放承重轴 PWM</label><button class="button secondary" :disabled="busy || !canReleaseOutput || !!state?.control.enabled || !releaseSupported || output?.diagnostic_active" @click="disableOutput">确认托住后释放 PWM</button><small>停止或管理会话失效后，仍可在当前连接中确认托住并请求释放输出，无需重新准备。断电时继续托住。</small></div>
+          </div>
+          <dl class="pwm-targets"><div v-for="(ticks, i) in output?.pwm_ticks ?? []" :key="i"><dt>{{ [...axisLabels, '夹爪'][i] }} {{ output?.stage === 'holding' ? '最近成功提交 PWM' : '历史 PWM 提交' }}</dt><dd>{{ ticks }} counts</dd></div></dl>
+          <p v-if="(!state?.executor.connected || output?.stage !== 'holding') && state?.joint_state.last_committed_target" class="input-detail">历史成功提交的软件目标：底座 {{ fmt(state.joint_state.last_committed_target.base_yaw_deg) }}° / 大臂 {{ fmt(state.joint_state.last_committed_target.shoulder_down_deg) }}° / 小臂 {{ fmt(state.joint_state.last_committed_target.elbow_down_deg) }}° / 夹爪 {{ fmt(state.joint_state.last_committed_target.gripper_open_ratio * 100, 0) }}%。这是历史写入记录，不表示当前 PWM 或实体位置。</p>
         </section>
         <template v-if="!settings">
           <div class="workspace-grid">
@@ -229,7 +307,7 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
             </section>
 
             <section class="panel model-panel">
-              <ArmScene :key="JSON.stringify(geometry)" :pose="pose" :requested="requested" :executor-label="executorLabel" :target-available="hasTargets" :physical="robot" :geometry="geometry" :muted="!history && !device.realReady" :history="history" :ghost="ghost" :axes="axes" :dimensions="dimensions" :reference="!state?.input.frames" />
+              <ArmScene :key="JSON.stringify(geometry)" :pose="pose" :requested="requested" :executor-label="executorLabel" :target-available="hasTargets" :physical="robot" :powered="powered" :geometry="geometry" :muted="!history && !device.realReady" :history="history" :ghost="ghost" :axes="axes" :dimensions="dimensions" :reference="!state?.input.frames" />
               <div class="scene-options"><label><input v-model="ghost" type="checkbox">请求轮廓</label><label><input v-model="axes" type="checkbox">关节坐标</label><label><input v-model="dimensions" type="checkbox">尺寸参考</label><span>无实体关节位置反馈</span></div>
               <div v-if="previewResult.gap && preview" class="history-gap">该时间段存在数据缺口，保持前一帧，不进行插值。</div>
               <div v-if="preview" class="preview-timeline"><div><strong>历史预览 · {{ detail?.name }}</strong><button class="text-button" @click="exitPreview">退出预览 ↗</button></div><input v-model.number="cursor" type="range" min="0" :max="detail?.duration_ms || 1" step="20" aria-label="历史录制时间轴"><span>{{ (cursor / 1000).toFixed(2) }}s / {{ ((detail?.duration_ms ?? 0) / 1000).toFixed(2) }}s</span></div>
@@ -237,8 +315,9 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
             </section>
 
             <section class="panel output-panel">
-              <div class="panel-heading"><h2>关节目标</h2><span class="tiny-tag">{{ robot ? 'PWM LOCKED' : 'VIRTUAL' }}</span></div>
-              <div class="target-table-head"><span>关节</span><span>请求</span><span>软件输出目标</span></div>
+              <div class="panel-heading"><h2>关节目标</h2><span class="tiny-tag">{{ powered ? 'ROBOT / ' + (output?.stage ?? 'UNKNOWN').toUpperCase() : robot ? 'PWM LOCKED' : 'VIRTUAL' }}</span></div>
+              <div class="target-table-head"><span>关节</span><span>请求</span><span>{{ powered ? '已提交软件目标' : '软件输出目标' }}</span></div>
+              <p v-if="powered && !history" class="input-detail">{{ !state?.executor.connected ? '执行端遥测已断开或过期，当前输出目标不可确认。' : output?.stage === 'holding' ? '目标表示最后成功写入的软件目标；无实体位置实测。' : output?.stage === 'unknown' ? 'PCA 状态未知，当前输出目标不可确认。历史提交仅供诊断，不代表仍在输出。' : output?.committed ? 'PWM 当前已禁能，输出目标为空；历史提交仅供诊断。' : '尚无有效 PWM 目标提交；当前仅显示软件参考。' }}</p>
               <div v-for="(label, i) in axisLabels" :key="label" class="joint-row"><div class="joint-label"><span class="axis-dot" :class="'joint-' + i"></span><strong>{{ label }}</strong><small>{{ ['BASE / ψ', 'SHOULDER / α', 'ELBOW / β'][i] }}</small></div><div class="joint-numbers"><span>{{ fmt(displayRequested?.[axisKeys[i]!]) }}<small>°</small></span><b>{{ fmt(displayOutput?.[axisKeys[i]!]) }}<small>°</small></b></div><div class="joint-progress"><i :style="{ width: Math.max(0, Math.min(100, (pose[axisKeys[i]!] - activeLimits[i]![0]) / (activeLimits[i]![1] - activeLimits[i]![0]) * 100)) + '%' }"></i></div><div class="limit-label"><span>{{ activeLimits[i]![0] }}° — {{ activeLimits[i]![1] }}°</span><b v-if="!history && state?.joint_state.limits[i]">限位</b><span v-else>{{ robot ? '逻辑限位' : '仿真参数' }}</span></div></div>
               <div class="gripper-protection" role="status"><div class="gripper-readout"><span>夹爪软件开度<small>请求 / 输出目标 · 无实测反馈</small></span><strong>{{ fmt(displayRequested == null ? null : displayRequested.gripper_open_ratio * 100, 0) }} / {{ fmt(displayOutput == null ? null : displayOutput.gripper_open_ratio * 100, 0) }}<em>%</em></strong></div><dl v-if="gripper && !history"><div><dt>保护状态</dt><dd>{{ gripper.state }} · 周期 {{ gripper.cycle_id }}</dd></div><div><dt>已用 / 剩余</dt><dd>{{ fmt(gripper.elapsed_ms / 1000, 2) }} / {{ fmt(gripper.remaining_ms == null ? null : gripper.remaining_ms / 1000, 2) }} s</dd></div><div><dt>自动打开原因</dt><dd>{{ gripper.auto_open_reason ? gripperReasons[gripper.auto_open_reason] ?? gripper.auto_open_reason : '—' }}</dd></div><div v-if="gripper.reclose_blocked"><dt>再次闭合</dt><dd>等待软件打开目标与新的 B 点击</dd></div></dl><p>每次有效闭合最多 5 秒，包含闭合推进；暂停跟随不暂停保护。</p></div>
               <div class="control-state"><span>控制权</span><strong :class="{ cyan: state?.control.owner !== 'NONE' }">{{ owner }}</strong><small>{{ runLabel }}</small></div>
@@ -250,8 +329,8 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
                 <div class="neutral-angle-label"><span>关节映射符号</span><b>底座 +1 / 双臂 −1</b></div>
                 <ul class="gate-blockers"><li v-for="blocker in blockers.slice(0, 2)" :key="blocker">{{ blocker }}</li></ul>
               </div>
-              <button class="button primary full-width prepare-button" :disabled="busy || !canInitialize" @click="initialize">启用并回初始<span>↗</span></button>
-              <p class="prepare-hint">松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。</p>
+              <button class="button primary full-width prepare-button" :disabled="busy || !canInitialize" @click="initialize">{{ powered ? '初始化参考并限速回初始' : '启用并回初始' }}<span>↗</span></button>
+              <p class="prepare-hint">{{ powered ? '先完成三轴人工检查。松开 A/B 放稳 0.5 秒后初始化，限速回到启动目标并保持暂停；短按 A 开始。' : '松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。' }}</p>
               <button class="button secondary full-width reset-button" :disabled="busy || configLocked || preview || robot" @click="reset">复位至 45° 启动目标</button>
               <p class="control-hint">{{ reason }}</p>
               <p class="follow-limit-hint" :class="{ active: !history && state?.joint_state.limits.some(Boolean) }">超出范围已截住；退回有效角区继续跟随，回到启用手势回初始。</p>

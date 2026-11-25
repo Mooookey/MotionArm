@@ -94,6 +94,28 @@ main{max-width:1800px;margin:0 auto;padding:27px 27px 0}.page-heading{display:fl
 .executor-panel small { width: 100%; color: #93a9b5; line-height: 1.7; }
 .gripper-protection { min-width: 0; grid-column: 1 / -1; }
 .gripper-protection .gripper-readout { margin-bottom: 5px; }
+.powered-panel { margin-bottom: 20px; padding-bottom: 18px; }
+.powered-panel .panel-heading { flex-wrap: wrap; gap: 10px; }
+.powered-panel .panel-heading p { margin: 6px 0 0; color: #90aebc; font-size: 11px; line-height: 1.7; }
+.powered-summary { display: flex; flex-wrap: wrap; gap: 10px 20px; margin: 0 20px 16px; font-size: 11px; color: #8eabba; }
+.powered-summary b { color: #bad3df; overflow-wrap: anywhere; font-weight: 500; }
+.powered-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 0 20px; }
+.powered-steps > div { border: 1px solid #294752; border-radius: 6px; padding: 15px; min-width: 0; background: #10232d; }
+.powered-steps strong { font-size: 12px; color: #cadce5; }
+.powered-steps p, .powered-steps small { display: block; font-size: 11px; color: #91aeba; line-height: 1.8; }
+.powered-steps label { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 11px; color: #a4becb; line-height: 1.6; }
+.powered-steps label > select, .powered-steps label > input:not([type=checkbox]) { min-width: 0; flex: 1; padding: 8px; background: #0a1c26; border: 1px solid #36505d; border-radius: 4px; color: #c1d6e1; }
+.powered-steps input[type=checkbox] { flex-shrink: 0; accent-color: #46c6c0; }
+.powered-steps .button { width: 100%; margin-top: 8px; min-height: 36px; white-space: normal; line-height: 1.5; }
+.pwm-targets { display: flex; flex-wrap: wrap; gap: 15px 24px; margin: 18px 20px 0; font-size: 11px; }
+.pwm-targets > div { display: flex; gap: 10px; }
+.pwm-targets dt { color: #8babb9; }
+.pwm-targets dd { margin: 0; color: #b9d6df; font-family: monospace; }
+@media (max-width: 650px) {
+  .powered-steps, .powered-summary { margin-inline: 12px; }
+  .powered-steps { grid-template-columns: 1fr; }
+  .powered-panel .panel-heading { align-items: flex-start; }
+}
 .gripper-protection .gripper-readout strong { font-size: 18px; }
 .gripper-protection dl { margin: 0 18px; font-size: 9px; }
 .gripper-protection dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px; padding: 5px 0; }

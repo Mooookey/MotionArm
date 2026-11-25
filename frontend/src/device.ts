@@ -24,7 +24,7 @@ export const useDevice = defineStore('device', () => {
   let retryConfigAt = 0
   async function loadConfig() {
     if (configRequest) return configRequest
-    configRequest = request<ModelConfig>('/api/virtual/config').then((value) => {
+    configRequest = request<ModelConfig>('/api/executor/config').then((value) => {
       if (!validModelConfig(value)) throw new Error('后端仿真配置格式不兼容，请同步更新服务。')
       model.value = value
       retryConfigAt = 0
@@ -40,15 +40,18 @@ export const useDevice = defineStore('device', () => {
       if (typeof value === 'object' && value !== null && 'source' in value) {
         const source = (value as { source: unknown }).source
         incompatible.value = source === 'wearable'
-          ? '后端遥测格式不兼容，需要执行端 V4 服务。请同步更新前后端。'
+          ? '后端遥测格式不兼容，需要执行端 V5 服务。请同步更新前后端。'
           : '当前后端输入为 ' + String(source) + '。请使用 wearable 模式启动服务。'
       }
       return
     }
     incompatible.value = ''
+    if (snapshot.value && (snapshot.value.executor.kind !== value.executor.kind ||
+        snapshot.value.executor.boot_id !== value.executor.boot_id || snapshot.value.executor.profile_hash !== value.executor.profile_hash)) management.clear()
     if (snapshot.value && snapshot.value.executor.kind !== value.executor.kind) points.value = []
     snapshot.value = value
-    management.observe(true, value.control.enabled)
+    management.observe(value.executor.kind !== 'robot_powered' || value.executor.connected,
+      value.executor.kind === 'robot_powered' ? value.health?.manager_active === true : value.control.enabled)
     connection.value = 'connected'
     seenAt = performance.now()
     attempts = 0
@@ -108,5 +111,6 @@ export const useDevice = defineStore('device', () => {
   }
   function grantManagement(token: string) { management.grant(token) }
   function releaseManagement() { management.clear() }
-  return { snapshot, model, connection, incompatible, fresh, realReady, points, start, stop, loadConfig, grantManagement, releaseManagement }
+  function managementPayload() { return management.payload() }
+  return { snapshot, model, connection, incompatible, fresh, realReady, points, start, stop, loadConfig, grantManagement, releaseManagement, managementPayload }
 })

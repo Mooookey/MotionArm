@@ -1,8 +1,8 @@
-# robot：仅无动力执行端
+# robot：无动力锁定与空载小范围执行端
 
-本轮固件运行ESP-NOW v2与USB v2，执行端本地管理完整四元数固定参考、A点击跟随、B点击夹爪、限位/速度/加速度和5000ms不可续期保护。详细协议见 [通信协议](../../docs/03_Communication_Protocol.md)，操作见 [无动力执行端](../../docs/17_No_Power_Executor.md)。
+两种构建均以ESP-NOW v2作为实时输入，执行端本地管理完整四元数固定参考、A点击跟随、B点击夹爪、限位/速度/加速度和5000ms不可续期保护。默认构建仍是永久锁定的无动力固件。详细协议见 [通信协议](../../docs/03_Communication_Protocol.md)，操作见 [无动力执行端](../../docs/17_No_Power_Executor.md) 及 [空载执行阶段](../../docs/18_Powered_Empty_Trial.md)。
 
-**舵机动力必须关闭**。当前代码只配置和回读PCA9685 FULL_OFF，没有有效脉冲输出函数或解锁命令；即使意外接通动力，也不能由本固件接受运动目标并输出PWM。FULL_OFF仅为本轮启动锁，不是有动力阶段的松爪策略。
+**无动力构建的舵机动力必须关闭**。默认镜像只配置和回读PCA9685 FULL_OFF，有效PWM驱动和使能命令被编译排除；串口、Web或配置无法解除该锁。FULL_OFF是无动力启动锁，不是有动力阶段的松爪策略。
 
 USB115200、LF、每行≤512字节。PC先hello；仅支持init、stop和heartbeat。新握手/重连不初始化，管理心跳300ms过期本地停止、清参考、开爪；无线有效输入250ms过期同样处理。软件目标与实物位置区分，measured始终null；MAC层发送成功、I²C成功和串口ACK均不表示到位。
 
@@ -17,3 +17,21 @@ ArmProfile.h仍为空，不运行生成器为本机解锁。local/example配置s
 ```
 
 常规构建入口仅wearable/robot；历史joint_demo_v2位于firmware/archive，不烧录、不运行。原按住A、mode、速度积分和旧实体PC_MANUAL/REPLAY不进入当前固件。
+
+## 显式有动力空载构建
+
+`-RobotMode powered` 才编入PWM层，USB v3/230400，5Hz六组同快照编号遥测；每行≤512字节、批次≤3072字节。无线协议及腕端att:3均保持不变。启动仍FULL_OFF，构建、烧录、hello、初始化均不构成动力或动作授权。
+
+```powershell
+.\tools\build-local.ps1 -Action Build -Sketch robot -RobotMode powered -ArduinoData C:\Users\21211\AppData\Local\Arduino15
+```
+
+`config/robot_trial.json` schema3只生成`PoweredTrialProfile.h`：来源ad5644f，保留1610/1630/1570竖直锚点和1030/1050约45°点，底座1010/1610/2000分段；启动0/45/45/open；允许运行底座±3°、双臂42–48°，2°/s、5°/s²，夹爪1/s和5000ms。它不填写空的正式ArmProfile，不伪造完整工作区、承重或热安全验证。5V/6A是现场报告的电源额定值，非电流/温升实测。
+
+管理命令`prepare / enable_output / test_joint / disable_output / init`必须绑定当前`session_id / boot_id / profile_hash / request_id`。`enable_output`还要求`supported / power_confirmed / startup_aligned`均为true；首次PWM前必须托住并人工对齐启动姿态。`test_joint`仅接纳axis0–2和相对启动姿态的offset_deg∈[-3,3]（0返回启动），上一诊断完成后才可下一次；不是连续USB目标接口。相同request_id与相同标量内容只ACK不重执行，内容改变拒绝；32个已处理绑定请求后需重新握手，缓存不驱逐旧确认。
+
+`prepare`后管理心跳100ms，300ms到期即停止/清参考/开爪。STOP、无线失效、会话变化均保持承重轴最后成功提交PWM，夹爪独立打开；`output_locked=false`表示仍在保持，不代表跟随已运行。初始化回启动姿态采用受限轨迹，完成后暂停。PWM层以单次CH12–15批量写入提交、定期回读；失败后stage=unknown、不再推进或自动恢复，不声称保持/开爪已完成。人工处置并重新准备。
+
+计划结束先STOP并等待软件开爪；**提醒托住并等待确认后**，`disable_output(supported=true)`才释放PWM，再人工切动力。正常通电且承重轴保持PWM无需持续托扶。未知输出故障允许在确认托住后释放，不以软件开爪完成作为虚假前提。`measured`始终null，ACK和I²C成功均不是实体到位反馈。
+单轴诊断 offset_deg=0 表示该轴按同样的限速轨迹返回启动目标；可依次执行 +3/0/-3/0，范围始终不超过本次±3°限制。
+有动力串口在 begin 前显式选择 ESP32 APB 时钟，波特率仍为230400。ACK/NACK/HELLO采用4条整行有界待发队列，先于事件及整批遥测发送；拥塞时保留应答而不重执行动作，新HELLO清除旧会话未发应答，饱和时STOP仍执行并保留应答。v3 health额外上报serial_errors以区分接收解析错误与drop_uart发送拥塞；v2字段保持原义。

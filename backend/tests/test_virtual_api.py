@@ -95,7 +95,7 @@ class VirtualApiTests(unittest.TestCase):
 
     def test_disconnected_schema_has_no_fake_angles_or_hardware_feedback(self):
         state = self.status()
-        self.assertEqual(state["schema_version"], 4)
+        self.assertEqual(state["schema_version"], 5)
         self.assertEqual(state["input"]["status"], "disconnected")
         self.assertEqual(state["input"]["attitude_representation"], ATTITUDE_REPRESENTATION)
         self.assertIsNone(state["imu"]["quaternion"])
@@ -217,7 +217,7 @@ class VirtualApiTests(unittest.TestCase):
         identifier = self.save_record()
         detail = self.client.get(f"/api/recordings/{identifier}").json()
         metadata = detail["metadata"]
-        self.assertEqual(metadata["schema_version"], 4)
+        self.assertEqual(metadata["schema_version"], 5)
         self.assertEqual(metadata["attitude_representation"], ATTITUDE_REPRESENTATION)
         self.assertEqual(metadata["controller_version"], MAPPING_VERSION)
         self.assertEqual(metadata["mounting"], MOUNTING)

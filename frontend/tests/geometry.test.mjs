@@ -5,6 +5,7 @@ import { nextAccelerationWarning, sceneResizeAction } from '../src/displayStabil
 import { buttonTelemetryFresh, coordinatedFollowLabel } from '../src/controlPresentation.ts'
 import { validFrame, validModelConfig } from '../src/telemetry.ts'
 import { ManagementLease } from '../src/management.ts'
+import { poweredBinding, outputStageLabel, canViewHistory } from '../src/powered.ts'
 
 test('upright assembly reference reaches 360mm without forward displacement', () => {
   const p = tipPosition({ ...referencePose, shoulder_down_deg: 0, elbow_down_deg: 0 }, fallbackGeometry)
@@ -104,7 +105,7 @@ test('robot button levels depend on fresh wireless receipt rather than IMU valid
 })
 
 const liveFrame = () => ({
-  schema_version: 4, source: 'wearable', server_time_ms: 1000,
+  schema_version: 5, source: 'wearable', server_time_ms: 1000,
   input: { kind: 'imu_usb', status: 'valid', attitude_representation: 'quaternion_sensor_to_world_v3' },
   executor: { kind: 'virtual', connected: true, output_locked: true },
   gripper: { state: 'OPEN_READY', requested_open_ratio: 1, output_open_ratio: 1, limit_ms: 5000, elapsed_ms: 0, remaining_ms: null, cycle_id: 0, auto_open_reason: null, reclose_blocked: false },
@@ -115,10 +116,11 @@ const liveFrame = () => ({
   joint_state: { requested: { ...referencePose }, output_target: { ...referencePose }, measured: null },
   recording: { active: false }, replay: { active: false }, events: [],
 })
-test('live telemetry requires V4 and rejects old or incomplete quaternion diagnostics', () => {
+test('live telemetry requires V5 and rejects old or incomplete quaternion diagnostics', () => {
   assert.equal(validFrame(liveFrame()), true)
   for (const change of [
     (f) => { f.schema_version = 3 },
+    (f) => { f.schema_version = 4 },
     (f) => { delete f.imu.gyro_dps },
     (f) => { f.imu.accel_g = [0, 1] },
     (f) => { f.imu.quaternion = [0, 0, 0, 0] },
@@ -189,6 +191,79 @@ test('disconnected telemetry uses explicit null diagnostics and no fabricated re
   assert.equal(validFrame(value), true)
   assert.equal(value.imu.roll_deg, null)
   assert.equal(value.control.follow.reference_quaternion, null)
+})
+
+const poweredFrame = () => {
+  const value = liveFrame()
+  value.input.kind = 'esp_now'
+  value.executor = { kind: 'robot_powered', connected: true, output_locked: false, boot_id: 'robot-boot', protocol_version: 3, profile_hash: 'trial-hash' }
+  value.output = { profile_hash: 'trial-hash', stage: 'holding', pwm_ticks: [330, 211, 215, 232], last_write_ms: 100, write_errors: 0, pwm_enabled: true, committed: true, trial_limits_deg: [[-3, 3], [42, 48], [42, 48]], max_velocity_deg_s: 2, max_acceleration_deg_s2: 5, power_confirmed: true, prepared: true, diagnostic_active: false }
+  return value
+}
+test('powered telemetry keeps PWM holding distinct from locks and physical feedback', () => {
+  assert.equal(validFrame(poweredFrame()), true)
+  for (const change of [
+    (f) => { f.executor.output_locked = true },
+    (f) => { f.executor.protocol_version = 2 },
+    (f) => { f.executor.profile_hash = 'different' },
+    (f) => { f.output.pwm_ticks[0] = 4096 },
+    (f) => { f.output.stage = 'holding'; f.output.committed = false },
+    (f) => { f.output.stage = 'unknown'; f.output.pwm_enabled = null }, // Unknown must not publish a current accepted output target.
+    (f) => { f.output.trial_limits_deg[0] = [-45, 45] },
+    (f) => { f.output.max_velocity_deg_s = 20 },
+    (f) => { f.joint_state.measured = { ...referencePose } },
+  ]) {
+    const frame = poweredFrame(); change(frame)
+    assert.equal(validFrame(frame), false)
+  }
+  for (const committed of [true, false]) {
+    const failed = poweredFrame()
+    failed.output.stage = 'unknown'; failed.output.pwm_enabled = null; failed.output.committed = committed
+    failed.joint_state.last_committed_target = committed ? failed.joint_state.output_target : null
+    failed.joint_state.output_target = null
+    failed.gripper.output_open_ratio = null
+    failed.gripper.last_committed_open_ratio = committed ? 1 : null
+    assert.equal(validFrame(failed), true)
+    failed.gripper.output_open_ratio = 1
+    assert.equal(validFrame(failed), false)
+    failed.gripper.output_open_ratio = null
+    failed.output.pwm_enabled = false
+    assert.equal(validFrame(failed), false)
+  }
+  const disabled = poweredFrame()
+  disabled.output.stage = 'disabled'; disabled.output.pwm_enabled = false
+  disabled.executor.output_locked = true
+  disabled.joint_state.last_committed_target = disabled.joint_state.output_target
+  disabled.joint_state.output_target = null
+  disabled.gripper.output_open_ratio = null
+  assert.equal(validFrame(disabled), true)
+  assert.notEqual(disabled.joint_state.last_committed_target, null)
+  const offline = poweredFrame()
+  offline.executor.connected = false
+  offline.joint_state.last_committed_target = offline.joint_state.output_target
+  offline.joint_state.output_target = null
+  offline.gripper.output_open_ratio = null
+  assert.equal(validFrame(offline), true)
+})
+test('powered management binds current board and config without granting a lease', () => {
+  const state = poweredFrame()
+  assert.deepEqual(poweredBinding(state, null), { boot_id: 'robot-boot', profile_hash: 'trial-hash' })
+  assert.deepEqual(poweredBinding(state, { manager_token: 'explicit' }), { boot_id: 'robot-boot', profile_hash: 'trial-hash', manager_token: 'explicit' })
+  state.executor.connected = false
+  assert.throws(() => poweredBinding(state, null))
+  assert.throws(() => poweredBinding(liveFrame(), null))
+})
+test('physical history viewer requires stop and disconnect, and labels never claim measured position', () => {
+  const state = poweredFrame()
+  assert.equal(canViewHistory(state), false)
+  state.executor.connected = false; state.control.enabled = true
+  assert.equal(canViewHistory(state), false)
+  state.control.enabled = false
+  assert.equal(canViewHistory(state), true)
+  assert.equal(canViewHistory(liveFrame()), true)
+  assert.match(outputStageLabel('holding'), /PWM 输出保持/)
+  assert.match(outputStageLabel('unknown'), /未知/)
+  assert.match(outputStageLabel('disabled'), /释放/)
 })
 test('current config rejects removed mounting/sign/neutral fields at the live boundary', () => {
   const model = {

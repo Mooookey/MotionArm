@@ -1,11 +1,14 @@
-"""Bounded robot USB v2 management and atomic, read-only ESP-NOW snapshots.
+"""Bounded robot USB management and atomic ESP-NOW/control snapshots.
 
-No USB target commands exist here. Motion authority stays on the robot.
+USB v2 is permanently locked. Explicit v3 adds guarded, bounded diagnostics;
+continuous motion authority stays on the robot's wireless controller.
 """
 import asyncio
 from concurrent.futures import Future
 from copy import deepcopy
 import json
+from hashlib import sha256
+from pathlib import Path
 from queue import Empty, Full, Queue
 import threading
 import time
@@ -15,7 +18,14 @@ from .wearable import validate_frame
 
 ROBOT_MAC = "C0:CD:D6:D0:9B:54"
 GROUPS = frozenset(("control", "imu", "targets", "gripper", "health"))
+POWERED_GROUPS = GROUPS | {"output"}
 POSE_KEYS = ("base_yaw_deg", "shoulder_down_deg", "elbow_down_deg", "gripper_open_ratio")
+
+
+def trial_profile():
+    data = json.loads((Path(__file__).resolve().parents[2] / "config" / "robot_trial.json").read_text(encoding="utf-8"))
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return data, "sha256:" + sha256(canonical).hexdigest()
 
 
 def pose_valid(value):
@@ -24,15 +34,15 @@ def pose_valid(value):
             and 0 <= value["gripper_open_ratio"] <= 1)
 
 
-def decode(raw):
+def decode(raw, version=2):
     if len(raw) > 512 or not raw.endswith(b"\n"):
         raise ValueError("robot frame length")
     def reject(value):
         raise ValueError("nonfinite JSON")
     item = json.loads(raw, parse_constant=reject)
-    if not isinstance(item, dict) or item.get("v") != 2 or not integer(item.get("seq")):
-        raise ValueError("robot USB v2 required")
-    if item.get("type") not in GROUPS | {"hello_ack", "ack", "nack", "event"}:
+    if not isinstance(item, dict) or item.get("v") != version or not integer(item.get("seq")):
+        raise ValueError(f"robot USB v{version} required")
+    if item.get("type") not in (POWERED_GROUPS if version == 3 else GROUPS) | {"hello_ack", "ack", "nack", "event"}:
         raise ValueError("robot frame type")
     if not isinstance(item.get("boot_id"), str) or not 1 <= len(item["boot_id"]) <= 64:
         raise ValueError("robot boot identity")
@@ -49,9 +59,12 @@ def wearable_frame(item):
 
 
 class SnapshotAssembler:
-    """Only a complete five-part snapshot may change the public target state."""
-    def __init__(self, clock=time.monotonic):
+    """Only a complete same-cycle snapshot may change public target state."""
+    def __init__(self, clock=time.monotonic, mode="robot_no_power"):
         self.clock = clock
+        self.mode = mode
+        self.groups = POWERED_GROUPS if mode == "robot_powered" else GROUPS
+        self.budget = 3072 if mode == "robot_powered" else 2048
         self.clear()
 
     def clear(self):
@@ -63,7 +76,7 @@ class SnapshotAssembler:
         self.published = None
 
     def feed(self, item, size=0):
-        if item["type"] not in GROUPS:
+        if item["type"] not in self.groups:
             return None
         if not integer(item.get("snapshot_id")) or not integer(item.get("t_ms")):
             raise ValueError("robot snapshot identity")
@@ -83,23 +96,44 @@ class SnapshotAssembler:
         if item["type"] in self.parts:
             return None
         self.bytes += size
-        if self.bytes > 2048:
+        if self.bytes > self.budget:
             self.parts.clear()
             raise ValueError("robot snapshot budget")
         self.parts[item["type"]] = deepcopy(item)
-        if set(self.parts) != GROUPS:
+        if set(self.parts) != self.groups:
             return None
         result = self.parts
-        self.validate(result)
+        self.validate(result, self.mode)
         self.published = key[0]
         self.parts = {}
         return result
 
     @staticmethod
-    def validate(parts):
+    def validate(parts, mode="robot_no_power"):
         c, t, g, h = (parts[k] for k in ("control", "targets", "gripper", "health"))
-        if h.get("mode") != "robot_no_power" or h.get("output_locked") is not True or h.get("mac", "").upper() != ROBOT_MAC:
-            raise ValueError("robot no-power identity/output lock mismatch")
+        powered = mode == "robot_powered"
+        version = 3 if powered else 2
+        if (h.get("mode") != mode or h.get("mac", "").upper() != ROBOT_MAC
+                or any(p.get("v") != version for p in parts.values())
+                or not powered and h.get("output_locked") is not True):
+            raise ValueError("robot identity/protocol/output lock mismatch")
+        if powered:
+            o = parts.get("output", {})
+            if (not profile_hash_valid(o.get("profile_hash")) or o.get("stage") not in ("locked", "holding", "unknown", "disabled")
+                    or any(type(o.get(k)) is not bool for k in ("committed", "power_confirmed", "prepared", "diagnostic_active"))
+                    or not (o.get("pwm_enabled") is None if o.get("stage") == "unknown" else type(o.get("pwm_enabled")) is bool)
+                    or not integer(o.get("write_errors"))
+                    or o.get("last_write_ms") is not None and not integer(o["last_write_ms"])):
+                raise ValueError("powered output diagnostics")
+            ticks = o.get("pwm_ticks")
+            if ticks is not None and (not isinstance(ticks, list) or len(ticks) != 4 or not all(integer(v) and v <= 4095 for v in ticks)):
+                raise ValueError("powered PWM ticks")
+            if (o.get("trial_limits_deg") != [[-3, 3], [42, 48], [42, 48]]
+                    or o.get("max_velocity_deg_s") != 2 or o.get("max_acceleration_deg_s2") != 5
+                    or type(h.get("output_locked")) is not bool
+                    or o["pwm_enabled"] and h["output_locked"]
+                    or o["stage"] == "holding" and (not o["pwm_enabled"] or not o["committed"])):
+                raise ValueError("powered output state/range mismatch")
         if type(h.get("pca_readable")) is not bool or not isinstance(h.get("wireless"), dict):
             raise ValueError("robot health")
         if "ev_drop" in h and not integer(h["ev_drop"]):
@@ -143,9 +177,16 @@ class SnapshotAssembler:
             raise ValueError("robot wearable identity")
 
 
+def profile_hash_valid(value):
+    return (isinstance(value, str) and value.startswith("sha256:") and len(value) == 71
+            and all(c in "0123456789abcdef" for c in value[7:]))
+
+
 class RobotLink:
-    def __init__(self, receiver, device, serial_factory=None):
+    def __init__(self, receiver, device, serial_factory=None, mode="robot_no_power"):
         self.receiver, self.device = receiver, device
+        self.mode = mode
+        self.version = 3 if mode == "robot_powered" else 2
         self.serial_factory = serial_factory
         self.halt = threading.Event()
         self.commands = Queue(maxsize=4)
@@ -168,7 +209,7 @@ class RobotLink:
         self.heartbeat_until = 0.
 
     async def request(self, kind, **payload):
-        if kind not in ("init", "stop"):
+        if kind not in (("init", "stop", "prepare", "enable_output", "test_joint", "disable_output") if self.version == 3 else ("init", "stop")):
             raise ValueError("USB motion targets are unavailable")
         future = Future()
         try:
@@ -197,7 +238,7 @@ class RobotLink:
         while not self.halt.is_set():
             emit({"type": "connecting"})
             try:
-                port = factory(baudrate=115200, timeout=.02, write_timeout=.1)
+                port = factory(baudrate=230400 if self.version == 3 else 115200, timeout=.02, write_timeout=.1)
                 port.port, port.dtr, port.rts = self.device, False, False
                 with port:
                     self._listen(port, emit)
@@ -225,11 +266,11 @@ class RobotLink:
         inflight = None
         next_hello = next_heartbeat = 0.
         deadline = time.monotonic() + 3
-        assembler = SnapshotAssembler()
+        assembler = SnapshotAssembler(mode=self.mode)
         def send(kind, **payload):
             nonlocal seq
             seq = (seq + 1) & 0xffffffff
-            item = {"v": 2, "type": kind, "seq": seq, **payload}
+            item = {"v": self.version, "type": kind, "seq": seq, **payload}
             raw = json.dumps(item, separators=(",", ":"), allow_nan=False).encode() + b"\n"
             if len(raw) > 512:
                 raise ValueError("robot command length")
@@ -284,7 +325,7 @@ class RobotLink:
                     pending.clear()
                     overflow = False
                     try:
-                        item = decode(raw)
+                        item = decode(raw, self.version)
                     except (ValueError, UnicodeError):
                         continue
                     if item["type"] == "hello_ack":
@@ -292,10 +333,14 @@ class RobotLink:
                             if item["boot_id"] != boot:
                                 raise ValueError("robot restarted")
                             continue
-                        if (item.get("role") != "robot" or item.get("protocol_version") != 2
-                                or item.get("mac", "").upper() != ROBOT_MAC or item.get("mode") != "robot_no_power"
-                                or item.get("output_locked") is not True or not isinstance(item.get("session_id"), str)):
+                        if (item.get("role") != "robot" or item.get("protocol_version") != self.version
+                                or item.get("mac", "").upper() != ROBOT_MAC or item.get("mode") != self.mode
+                                or type(item.get("output_locked")) is not bool
+                                or self.version == 2 and item.get("output_locked") is not True
+                                or not isinstance(item.get("session_id"), str)):
                             raise ValueError("robot identity or output lock rejected")
+                        if self.version == 3 and item.get("profile_hash") != trial_profile()[1]:
+                            raise ValueError("robot profile hash rejected")
                         boot, session = item["boot_id"], item["session_id"]
                         self.disarm()  # HELLO/reconnect can never restore control.
                         emit(item)

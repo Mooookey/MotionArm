@@ -19,7 +19,7 @@ from .recording_export import recording_csv
 from .protocol import finite_number
 from .virtual import DEFAULT_CONFIG, LIMIT_POLICY, MAPPING_VERSION, MOUNTING, POSE_KEYS, VirtualController, forward_kinematics, pose
 from .wearable import ATTITUDE_REPRESENTATION, FirmwareIncompatible, WearableReader, validate_frame
-from .robot import RobotLink, SnapshotAssembler, wearable_frame, ROBOT_MAC
+from .robot import RobotLink, SnapshotAssembler, wearable_frame, ROBOT_MAC, profile_hash_valid, trial_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 CONVENTION = "base_yaw_shoulder_down_elbow_relative_down_gripper_open_ratio_v1"
@@ -101,6 +101,26 @@ class VirtualRuntime:
         self.manager_socket = None
         self.robot_managed_enabled = False
         self.initializations = {}
+        self.power_actions = {}
+        self.acceptance = []
+        self.trial_config, self.trial_hash = trial_profile()
+        self.manager_observed = False
+        self.robot_last_output = None
+        self.manager_generation = 0
+
+    @property
+    def physical(self):
+        return self.executor_kind in ("robot_no_power", "robot_powered")
+
+    @property
+    def powered(self):
+        return self.executor_kind == "robot_powered"
+
+    @property
+    def robot_config_id(self):
+        if self.powered:
+            return (self.robot_hello or {}).get("profile_hash", "robot_powered:unknown")
+        return "robot_no_power:" + MAPPING_VERSION
 
     def save_config(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,14 +142,16 @@ class VirtualRuntime:
             identifier = self.records.active
             self.flush_events()
             terminal = self.snapshot()
-            physical = self.executor_kind == "robot_no_power"
+            physical = self.physical
             timeline = self.robot_clock_total if physical and self.robot_clock_total is not None else round((self.clock() - self.started) * 1000)
             self.records.note_event({"code": "RECORD_INTERRUPTED", "message": reason, "origin": "backend",
                                      "clock_domain": "backend_monotonic", "pc_elapsed_ms": round((self.clock() - self.started) * 1000),
                                      "time_ms": int(time.time() * 1000), "t_ms": timeline,
                                      "final_state_confirmed": bool(not physical or self.robot_parts and terminal["executor"]["connected"] and not terminal["control"]["enabled"]
-                                                                   and terminal["joint_state"]["requested"]["gripper_open_ratio"] == 1),
+                                                                   and terminal["joint_state"]["requested"]["gripper_open_ratio"] == 1
+                                                                   and (not self.powered or terminal["output"]["stage"] != "unknown")),
                                      "final_state": {"joint_state": terminal["joint_state"], "gripper": terminal["gripper"],
+                                                     "output": terminal.get("output"),
                                                      "executor": terminal["executor"], "control": terminal["control"],
                                                      "health": terminal.get("health"), "imu": terminal["imu"], "buttons": terminal["buttons"]}})
             if physical:
@@ -138,11 +160,11 @@ class VirtualRuntime:
 
     def flush_events(self):
         now = self.clock()
-        events = self.robot_events if self.executor_kind == "robot_no_power" else self.controller.events
+        events = self.robot_events if self.physical else self.controller.events
         for item in events:
             marker = (item.get("boot_id", "virtual"), item.get("event_seq", item["time_ms"]))
             if marker not in self.recorded_events:
-                if self.executor_kind == "robot_no_power" and self.robot_clock_raw is not None:
+                if self.physical and self.robot_clock_raw is not None:
                     raw = item["robot_device_ms"]
                     delta = ((raw - self.robot_clock_raw + 2**31) % 2**32) - 2**31
                     stamp = self.robot_clock_total + delta
@@ -153,7 +175,7 @@ class VirtualRuntime:
         self.recorded_events = {(e.get("boot_id", "virtual"), e.get("event_seq", e["time_ms"])) for e in events}
 
     def incomplete_robot_events(self, reason, **diagnostics):
-        if not self.records.active or self.executor_kind != "robot_no_power":
+        if not self.records.active or not self.physical:
             return
         self.flush_events()
         self.records.note_event({"code": "EVENT_STREAM_INCOMPLETE", "message": reason, "origin": "backend",
@@ -164,7 +186,7 @@ class VirtualRuntime:
     def finish_record(self):
         if self.records.active:
             identifier = self.records.active
-            if self.executor_kind == "robot_no_power":
+            if self.physical:
                 control = self.robot_parts["control"] if self.robot_parts else {}
                 if not self.robot_input_valid() or not control.get("enabled") or control.get("fault"):
                     self.interrupt_record(control.get("fault") or control.get("reason") or "执行端输入无效或控制已停止")
@@ -177,17 +199,20 @@ class VirtualRuntime:
         return self.last_recording
 
     def clear_manager(self):
+        self.manager_generation += 1
         self.manager_token = self.manager_at = None
         self.manager_socket = None
         self.robot_managed_enabled = False
+        self.manager_observed = False
         self.initializations.clear()
+        self.power_actions.clear()
         if self.robot_link:
             self.robot_link.disarm()
 
     def start_manager(self):
         self.manager_token, self.manager_at = uuid4().hex, self.clock()
         self.manager_socket = None
-        if self.executor_kind == "robot_no_power" and self.robot_link:
+        if self.physical and self.robot_link:
             self.robot_link.renew()
         return self.manager_token
 
@@ -195,22 +220,37 @@ class VirtualRuntime:
         if not token or token != self.manager_token or self.manager_at is None or self.clock() - self.manager_at >= .75:
             raise ValueError("管理会话已失效，请明确重新初始化")
         self.manager_at = self.clock()
-        if self.executor_kind == "robot_no_power" and self.robot_link:
+        if self.physical and self.robot_link:
             self.robot_link.renew()
 
     def robot_receive(self, message):
         kind = message["type"]
         if kind == "hello_ack":
+            if self.powered and (message.get("profile_hash") != self.trial_hash
+                    or message.get("mac", "").upper() != ROBOT_MAC
+                    or message.get("mode") != "robot_powered" or message.get("protocol_version") != 3):
+                self.reject_robot("执行端身份、协议或配置哈希不匹配")
+                return
             self.clear_manager()
             self.robot_parts = self.robot_received = None
             self.robot_clock_raw = self.robot_clock_total = None
             self.robot_last_event_seq = None
+            self.acceptance = []
             self.robot_hello = message.copy()
+            if self.powered:
+                self.robot_last_output = {"stage": "locked" if message.get("output_locked") is True else "unknown"}
             self.robot_status = "connected"
         elif kind == "snapshot":
             parts = message["parts"]
-            SnapshotAssembler.validate(parts)
+            try:
+                SnapshotAssembler.validate(parts, self.executor_kind)
+            except (ValueError, KeyError, TypeError):
+                self.reject_robot("执行端完整快照校验失败")
+                return
             if not self.robot_hello or parts["control"]["boot_id"] != self.robot_hello["boot_id"]:
+                return
+            if self.powered and parts["output"]["profile_hash"] != self.robot_hello["profile_hash"]:
+                self.reject_robot("执行端配置哈希变化")
                 return
             if self.robot_parts and parts["imu"].get("wearable_boot") != self.robot_parts["imu"].get("wearable_boot"):
                 self.interrupt_record("腕端重启")
@@ -225,14 +265,20 @@ class VirtualRuntime:
                 self.robot_clock_total += delta
             self.robot_clock_raw = raw_time
             self.robot_parts, self.robot_received = deepcopy(parts), self.clock()
+            if self.powered:
+                self.robot_last_output = deepcopy(parts["output"])
             self.robot_pc_received_ns = time.monotonic_ns()
             self.robot_status, self.robot_detail = "connected", None
             if self.manager_token:
+                if parts["health"].get("manager_active"):
+                    self.manager_observed = True
                 if parts["control"]["enabled"]:
                     self.robot_managed_enabled = True
                 elif self.robot_managed_enabled or parts["control"].get("fault"):
                     self.clear_manager()
-            if (self.records.active and self.executor_kind == "robot_no_power" and self.record_ev_drop is not None
+                elif self.powered and self.manager_observed and not parts["health"].get("manager_active"):
+                    self.clear_manager()
+            if (self.records.active and self.physical and self.record_ev_drop is not None
                     and parts["health"].get("ev_drop", 0) != self.record_ev_drop):
                 self.incomplete_robot_events("执行端事件丢失计数变化", previous_ev_drop=self.record_ev_drop,
                                              ev_drop=parts["health"].get("ev_drop", 0))
@@ -270,8 +316,15 @@ class VirtualRuntime:
         else:
             self.robot_status = "connecting" if kind == "connecting" else "disconnected"
             self.robot_detail = message.get("detail")
+            if self.powered and self.robot_last_output and self.robot_last_output["stage"] == "holding":
+                self.robot_last_output = {**self.robot_last_output, "stage": "unknown", "committed": False}
             self.clear_manager()
             self.interrupt_record(self.robot_detail or "执行端连接中断")
+
+    def reject_robot(self, detail):
+        self.robot_status, self.robot_detail = "incompatible", detail
+        self.clear_manager()
+        self.interrupt_record(detail)
 
     def robot_input_valid(self):
         if not self.robot_parts or self.robot_received is None or self.robot_status != "connected":
@@ -283,37 +336,132 @@ class VirtualRuntime:
     async def connect_robot(self, port):
         import re
         from serial.tools import list_ports
-        if self.executor_kind != "robot_no_power":
-            raise ValueError("请先选择实体无动力执行端")
+        if not self.physical:
+            raise ValueError("请先选择实体执行端")
         if not isinstance(port, str) or not re.fullmatch(r"COM[1-9][0-9]*", port) or port not in {p.device for p in list_ports.comports()}:
             raise ValueError("请选择有效执行端串口")
         if self.reader and port == self.port:
             raise ValueError("执行端与腕端不能占用同一串口")
         await self.disconnect_robot()
         self.robot_port, self.robot_status = port, "connecting"
-        self.robot_link = RobotLink(self.robot_receive, port)
+        self.robot_link = RobotLink(self.robot_receive, port, mode=self.executor_kind)
         self.robot_link.start()
 
     async def disconnect_robot(self):
         self.clear_manager()
+        self.interrupt_record("执行端已断开")
         if self.robot_link:
             await self.robot_link.close()
             self.robot_link = None
         self.robot_status = "disconnected"
         self.robot_hello = self.robot_parts = self.robot_received = None
-        self.interrupt_record("执行端已断开")
 
     async def select_executor(self, kind):
-        if kind not in ("virtual", "robot_no_power"):
-            raise ValueError("本轮仅允许虚拟或实体无动力执行端，有动力输出不可用")
+        if kind not in ("virtual", "robot_no_power", "robot_powered"):
+            raise ValueError("未知执行端类型")
         if self.records.active or self.replay["active"] or self.snapshot()["control"]["enabled"]:
             raise ValueError("请先停止控制、录制和回放，再切换执行端")
         if kind != self.executor_kind:
+            if self.powered and self.robot_last_output and self.robot_last_output["stage"] in ("holding", "unknown"):
+                raise ValueError("请先托住并明确释放PWM输出，再切换执行端")
             self.clear_manager()
             self.controller.stop("执行端变化，请重新初始化")
             await self.disconnect_robot()
             self.executor_kind = kind
             self.tokens.clear()
+
+    def powered_binding(self, body, require_manager=True):
+        if not self.powered or not self.robot_link or not self.robot_hello or not self.robot_snapshot()["executor"]["connected"]:
+            raise ValueError("需要连接当前有动力执行端并收到新鲜完整快照")
+        if (body.get("boot_id") != self.robot_hello["boot_id"]
+                or body.get("profile_hash") != self.robot_hello["profile_hash"]
+                or body.get("profile_hash") != self.trial_hash):
+            raise ValueError("设备boot或配置哈希已变化，请重新核对准备")
+        if require_manager:
+            self.heartbeat(body.get("manager_token"))
+        return {"boot_id": body["boot_id"], "profile_hash": body["profile_hash"]}
+
+    async def powered_action(self, action, body):
+        if action not in ("prepare", "enable_output", "test_joint", "disable_output"):
+            raise ValueError("未知有动力管理操作")
+        binding = self.powered_binding(body, False)
+        identifier = body.get("request_id")
+        if not isinstance(identifier, str) or not 1 <= len(identifier) <= 64:
+            raise ValueError("管理操作request_id应为1–64字符")
+        marker = json.dumps({"action": action, **body}, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if identifier in self.power_actions:
+            previous, result = self.power_actions[identifier]
+            if marker != previous:
+                raise ValueError("同一request_id不可用于不同操作或参数")
+            if action != "disable_output":
+                self.heartbeat(self.manager_token if action == "prepare" else body.get("manager_token"))
+            return result
+        if action not in ("prepare", "disable_output") or action == "prepare" and self.manager_token:
+            self.heartbeat(body.get("manager_token"))
+        if self.records.active or self.replay["active"]:
+            raise ValueError("请先停止录制和回放")
+        if self.robot_parts["control"]["enabled"]:
+            raise ValueError("请先停止姿态控制")
+        payload = {**binding, "request_id": identifier}
+        if action == "enable_output":
+            if not all(body.get(k) is True for k in ("supported", "power_confirmed", "startup_aligned")):
+                raise ValueError("首次使能前须明确确认托住、对齐0/45/45打开姿态及动力已接通")
+            payload.update(supported=True, power_confirmed=True, startup_aligned=True)
+        elif action == "disable_output":
+            if body.get("supported") is not True:
+                raise ValueError("释放承重轴PWM前须现场确认托住机械臂")
+            payload["supported"] = True
+        elif action == "test_joint":
+            axis, delta = body.get("axis"), body.get("offset_deg")
+            if not isinstance(axis, int) or isinstance(axis, bool) or axis not in (0, 1, 2) or not finite_number(delta) or not -3 <= delta <= 3:
+                raise ValueError("单轴检查仅允许轴0/1/2、相对启动姿态±3°")
+            payload.update(axis=axis, offset_deg=delta)
+        generation = self.manager_generation
+        try:
+            answer = await self.robot_link.request(action, **payload)
+        except (Exception, asyncio.CancelledError) as exc:
+            # An ACK timeout does not prove the robot rejected the command.
+            # Revoke browser renewal before attempting the bounded STOP so an
+            # uncertain diagnostic/enable cannot retain authority via heartbeat.
+            self.clear_manager()
+            outcome = "管理操作结果未知；已撤销会话并请求停止，请核对遥测后重新准备"
+            self.robot_detail = outcome
+            with CancelScope(shield=True):
+                with suppress(ValueError, TimeoutError, OSError):
+                    await asyncio.wait_for(self.robot_link.request("stop"), 1.)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            self.robot_detail = outcome
+            raise ValueError(outcome) from exc
+        if generation != self.manager_generation:
+            raise ValueError("管理状态已停止或失效，迟到ACK不能恢复控制权")
+        if answer.get("type") != "ack":
+            raise ValueError(answer.get("error") or answer.get("error_code") or "执行端拒绝管理操作")
+        if action == "prepare" and not self.manager_token:
+            self.start_manager()
+        result = {"ok": True, "accepted": True, "manager_token": self.manager_token,
+                  "boot_id": binding["boot_id"], "profile_hash": binding["profile_hash"], "action": action}
+        self.power_actions[identifier] = (marker, result)
+        if len(self.power_actions) > 32:
+            self.power_actions.pop(next(iter(self.power_actions)))
+        return result
+
+    def record_acceptance(self, body):
+        self.powered_binding(body)
+        axis = body.get("axis")
+        if axis not in ("base", "shoulder", "elbow", "coordinated", "gripper", "stop_protection") or type(body.get("passed")) is not bool:
+            raise ValueError("请选择验收项目并明确现场结果")
+        note = body.get("note", "")
+        if not isinstance(note, str) or len(note) > 500:
+            raise ValueError("现场记录须为500字符以内文本")
+        item = {"axis": axis, "passed": body["passed"], "note": note, "boot_id": body["boot_id"],
+                "profile_hash": body["profile_hash"], "time_ms": int(time.time()*1000), "origin": "operator",
+                "code": "OPERATOR_ACCEPTANCE", "message": f"现场观察 {axis}: {body['passed']}",
+                "robot_device_ms": self.robot_clock_raw, "event_seq": "operator-" + uuid4().hex}
+        self.acceptance = [a for a in self.acceptance if a["axis"] != axis] + [item]
+        self.robot_events = (self.robot_events + [item])[-60:]
+        self.flush_events()
+        return {"ok": True, "acceptance": deepcopy(self.acceptance)}
 
     async def initialize(self, request_id=None):
         if request_id is None:
@@ -330,16 +478,26 @@ class VirtualRuntime:
         else:
             state = self.robot_snapshot()
             if self.records.active or self.replay["active"] or not state["control"]["can_enable"] or not self.robot_link:
-                raise ValueError("执行端不满足无动力初始化条件")
+                raise ValueError("执行端不满足初始化条件")
+            payload = {"request_id": request_id}
+            if self.powered:
+                if not self.manager_token or not self.robot_parts["output"]["prepared"]:
+                    raise ValueError("请先准备当前有动力执行端管理会话")
+                if not all(any(a["axis"] == axis and a["passed"] for a in self.acceptance) for axis in ("base", "shoulder", "elbow")):
+                    raise ValueError("须先逐轴完成小范围检查并记录现场通过")
+                payload.update(boot_id=self.robot_hello["boot_id"], profile_hash=self.robot_hello["profile_hash"])
             try:
-                answer = await self.robot_link.request("init", request_id=request_id)
+                generation = self.manager_generation
+                answer = await self.robot_link.request("init", **payload)
             except (ValueError, TimeoutError) as exc:
                 self.clear_manager()
                 raise ValueError("初始化未获得确认；不恢复控制，请检查执行端状态") from exc
+            if generation != self.manager_generation:
+                raise ValueError("初始化期间管理状态已停止或失效，迟到ACK不能恢复控制权")
             if answer["type"] != "ack":
                 raise ValueError(answer.get("error") or answer.get("error_code") or "执行端拒绝初始化")
         self.tokens.clear()
-        result = {"ok": True, "manager_token": self.start_manager(), **self.config_snapshot()}
+        result = {"ok": True, "manager_token": self.manager_token if self.powered else self.start_manager(), **self.config_snapshot()}
         self.initializations[request_id] = result
         return result
 
@@ -347,7 +505,7 @@ class VirtualRuntime:
         self.clear_manager()
         was_replay = self.replay["active"]
         self.stop_replay()
-        if self.executor_kind == "robot_no_power" and self.robot_link and self.robot_hello:
+        if self.physical and self.robot_link and self.robot_hello:
             try:
                 await self.robot_link.request("stop")
                 # ACK confirms command handling only. While recording, admit
@@ -435,12 +593,17 @@ class VirtualRuntime:
         return "valid" if c.valid() else "invalid"
 
     def config_snapshot(self):
-        physical = self.executor_kind == "robot_no_power"
-        return {"config": deepcopy(DEFAULT_CONFIG if physical else self.controller.config),
-                "config_id": "robot_no_power:" + MAPPING_VERSION if physical else self.controller.config_id,
+        physical = self.physical
+        config = deepcopy(DEFAULT_CONFIG if physical else self.controller.config)
+        if self.powered:
+            config.update(limits_deg=[[-3., 3.], [42., 48.], [42., 48.]], max_velocity_deg_s=[2., 2., 2.], max_acceleration_deg_s2=[5., 5., 5.])
+        return {"config": config,
+                "config_id": self.robot_config_id if physical else self.controller.config_id,
                 "mounting": deepcopy(MOUNTING),
                 "geometry": deepcopy(self.geometry), "baseline_id": self.baseline["baseline_id"],
-                "warning": self.config_warning}
+                "warning": self.config_warning,
+                "trial_profile": deepcopy(self.trial_config) if self.powered else None,
+                "profile_hash": self.trial_hash if self.powered else None}
 
     def metadata(self):
         result = {**self.config_snapshot(), "input": "imu_usb", "executor": "virtual",
@@ -450,17 +613,22 @@ class VirtualRuntime:
                 "attitude_representation": ATTITUDE_REPRESENTATION,
                 "reference_quaternion": deepcopy(self.controller.reference_quaternion),
                 "gyro_range_dps": self.controller.frame["gr"] if self.controller.frame else None,
-                "angle_convention": CONVENTION, "schema_version": 4,
+                "angle_convention": CONVENTION, "schema_version": 5,
                 "gripper_policy": "close_cycle_5000ms_including_motion_v1",
                 "label": "虚拟关节目标／估算预览", "measured": None}
-        if self.executor_kind == "robot_no_power":
-            result.update(input="esp_now", executor="robot_no_power", output_locked=True,
+        if self.physical:
+            result.update(input="esp_now", executor=self.executor_kind,
+                          output_locked=self.robot_parts["health"]["output_locked"],
                           robot_boot=self.robot_hello["boot_id"], robot_mac=ROBOT_MAC,
+                          wearable_boot=self.robot_parts["imu"]["wearable_boot"],
+                          wearable_mac=self.robot_parts["health"].get("wearable_mac"),
+                          profile_hash=self.robot_hello.get("profile_hash"),
+                          output=deepcopy(self.robot_parts.get("output")), acceptance=deepcopy(self.acceptance),
                           event_baseline={"event_seq": self.robot_last_event_seq,
                                           "ev_drop": self.robot_parts["health"].get("ev_drop", 0),
                                           "robot_device_ms": self.robot_clock_raw},
                           reference_quaternion=self.robot_parts["control"]["reference_quaternion"],
-                          label="实体执行端软件目标／PWM锁定／无位置反馈")
+                          label="实体执行端已提交软件目标／无位置反馈" if self.powered else "实体执行端软件目标／PWM锁定／无位置反馈")
         return result
 
     def enable_blockers(self):
@@ -473,7 +641,7 @@ class VirtualRuntime:
         return self.controller.enable_blockers()
 
     def snapshot(self):
-        return self.robot_snapshot() if self.executor_kind == "robot_no_power" else self.virtual_snapshot()
+        return self.robot_snapshot() if self.physical else self.virtual_snapshot()
 
     def virtual_snapshot(self):
         c, status = self.controller, self.input_status()
@@ -489,7 +657,7 @@ class VirtualRuntime:
         elif self.records.active or not c.enabled:
             blockers = enable_blockers or blockers
         return {
-            "schema_version": 4, "event": "telemetry", "server_time_ms": int(time.time() * 1000),
+            "schema_version": 5, "event": "telemetry", "server_time_ms": int(time.time() * 1000),
             "source": "wearable", "read_only": False,
             "input": {"kind": "imu_usb", "status": status, "port": self.port, "boot_id": f.get("boot"),
                       "attitude_representation": ATTITUDE_REPRESENTATION,
@@ -543,10 +711,17 @@ class VirtualRuntime:
         else:
             input_status = "valid" if valid else "invalid"
         hello = self.robot_hello or {}
-        state["executor"] = {"kind": "robot_no_power", "mode": "robot_no_power", "label": "实体执行端 · 无动力联调",
+        state["executor"] = {"kind": self.executor_kind, "mode": self.executor_kind,
+                             "label": "实体执行端 · 空载小范围" if self.powered else "实体执行端 · 无动力联调",
                              "identity": hello.get("mac"), "port": self.robot_port,
-                             "connected": connected, "output_locked": True, "status": self.robot_status,
-                             "boot_id": hello.get("boot_id"), "age_ms": age}
+                             "connected": connected, "output_locked": parts["health"]["output_locked"] if parts else hello.get("output_locked", True), "status": self.robot_status,
+                             "boot_id": hello.get("boot_id"), "age_ms": age,
+                             "protocol_version": hello.get("protocol_version"), "profile_hash": hello.get("profile_hash"),
+                             "acceptance": deepcopy(self.acceptance)}
+        state["output"] = deepcopy(parts.get("output")) if parts else None
+        if self.powered and state["output"] and not connected:
+            state["output"].update(stage="unknown", pwm_enabled=None, prepared=False)
+            state["executor"]["output_locked"] = False
         state["input"] = {"kind": "esp_now", "status": input_status, "wireless_fresh": wireless_fresh,
                           "port": self.robot_port, "boot_id": parts["imu"].get("wearable_boot") if parts else None,
                           "attitude_representation": ATTITUDE_REPRESENTATION,
@@ -568,11 +743,18 @@ class VirtualRuntime:
                             "ac": f.get("ac"), "bc": f.get("bc")}
         blockers = [] if connected and valid and control.get("can_enable") else [control.get("reason") or "等待完整执行端遥测与稳定无线输入"]
         can_enable = not blockers and not self.records.active and not self.replay["active"]
+        if self.powered:
+            if not self.manager_token or not parts or not parts["output"].get("prepared"):
+                blockers.append("须明确准备当前管理会话")
+            if not all(any(a["axis"] == axis and a["passed"] for a in self.acceptance) for axis in ("base", "shoulder", "elbow")):
+                blockers.append("须逐轴记录现场动作通过后初始化跟随")
+            can_enable = can_enable and not blockers
         if self.records.active:
             blockers = ["请先结束录制"]
         # Last accepted robot state stays identifiable when stale. It is never
         # projected forward by the PC and does not grant a management session.
         state["control"] = {"state": "TELEOP" if control.get("armed") else "HOLD" if control.get("enabled") else "READY",
+                            "source_stale": not connected, "management_active": bool(self.manager_token),
                             "owner": control.get("owner", "NONE"), "enabled": bool(control.get("enabled")),
                             "armed": bool(control.get("armed")), "can_enable": bool(can_enable),
                             "reason": control.get("reason") or self.robot_detail, "fault": control.get("fault") if connected else "EXECUTOR_OFFLINE",
@@ -580,30 +762,39 @@ class VirtualRuntime:
                             "mapping": "COORDINATED_RELATIVE_ANGLE", "limit_policy": LIMIT_POLICY,
                             "follow": {"version": MAPPING_VERSION, "reference_quaternion": control.get("reference_quaternion"),
                                        "delta_rotation_vector_deg": vector, "deadzone_deg": 5., "limit_policy": LIMIT_POLICY,
-                                       "angle_ambiguous": bool(control.get("angle_ambiguous")), "pitch_weights": [1., 1.], "pitch_limits_deg": [-45., 15.]}}
+                                       "angle_ambiguous": bool(control.get("angle_ambiguous")), "pitch_weights": [1., 1.], "pitch_limits_deg": [-3., 3.] if self.powered else [-45., 15.]}}
         state["joint_state"] = ({key: deepcopy(parts["targets"].get(key)) for key in ("requested", "output_target", "measured", "velocity_deg_s", "limits")}
                                 if parts else {"requested": None, "output_target": None, "measured": None, "velocity_deg_s": [0., 0., 0.], "limits": [False]*3})
-        state["joint_state"]["tip_mm"] = forward_kinematics(state["joint_state"]["output_target"], self.geometry) if parts else None
+        if self.powered and parts:
+            known_commit = parts["output"]["committed"]
+            state["joint_state"]["last_committed_target"] = deepcopy(parts["targets"]["output_target"]) if known_commit else None
+            if not connected or parts["output"]["stage"] != "holding" or not parts["output"]["committed"]:
+                state["joint_state"]["output_target"] = None
+        state["joint_state"]["tip_mm"] = forward_kinematics(state["joint_state"]["output_target"], self.geometry) if state["joint_state"]["output_target"] else None
         state["gripper"] = ({**{k: v for k, v in parts["gripper"].items() if k not in ("v", "type", "seq", "boot_id", "snapshot_id", "t_ms")},
                               "requested_open_ratio": parts["targets"]["requested"]["gripper_open_ratio"],
                               "output_open_ratio": parts["targets"]["output_target"]["gripper_open_ratio"]} if parts else None)
+        if self.powered and parts:
+            state["gripper"]["last_committed_open_ratio"] = parts["targets"]["output_target"]["gripper_open_ratio"] if parts["output"]["committed"] else None
+            if not connected or parts["output"]["stage"] != "holding":
+                state["gripper"]["output_open_ratio"] = None
         state["health"] = deepcopy(parts["health"]) if parts else None
         state["events"] = self.robot_events[:]
-        state["config_id"] = "robot_no_power:" + MAPPING_VERSION
+        state["config_id"] = self.robot_config_id
         return state
 
     def start_record(self, name):
         c = self.controller
         if self.records.active:
             error("已有录制正在进行")
-        if self.executor_kind == "robot_no_power":
+        if self.physical:
             if not self.robot_input_valid() or not self.robot_parts["control"]["enabled"] or not self.manager_token:
-                error("录制需要已初始化且有新鲜输入的无动力执行端")
+                error("录制需要已初始化且有新鲜无线输入的执行端")
             self.robot_record_snapshot = None
             self.record_event_start = self.robot_clock_total
             self.record_ev_drop = self.robot_parts["health"].get("ev_drop", 0)
             result = self.records.start(name, "wearable", self.robot_hello["boot_id"] + ":" + str(self.robot_parts["imu"]["wearable_boot"]),
-                                        "robot_no_power:" + MAPPING_VERSION, "robot_no_power", "robot-usb-v2", metadata=self.metadata())
+                                        self.robot_config_id, self.executor_kind, "robot-usb-v3" if self.powered else "robot-usb-v2", metadata=self.metadata())
             self.append_robot_sample(self.clock())
             return self.records.get(result["id"])
         if not c.enabled or c.owner != "WEARABLE" or not c.valid():
@@ -626,8 +817,12 @@ class VirtualRuntime:
             violations.append("历史回放仅允许虚拟执行端，请先停止并明确切换为虚拟执行端")
         metadata, frames = record.get("metadata") or {}, record["frames"]
         known_executor = (metadata.get("executor") == "virtual"
-                          or metadata.get("schema_version") == 4 and metadata.get("executor") == "robot_no_power"
-                          and metadata.get("output_locked") is True)
+                          or metadata.get("schema_version") in (4, 5) and metadata.get("executor") == "robot_no_power"
+                          and metadata.get("output_locked") is True
+                          or metadata.get("schema_version") == 5 and metadata.get("executor") == "robot_powered"
+                          and profile_hash_valid(metadata.get("profile_hash")))
+        if self.robot_link is not None or self.robot_last_output and self.robot_last_output["stage"] in ("holding", "unknown"):
+            violations.append("实体执行端须停止、明确释放PWM并断开运动控制后才能虚拟回放")
         if metadata.get("angle_convention") != CONVENTION or not known_executor:
             violations.append("旧记录角度约定不明确，仅可查看和导出")
         if record["status"] != "completed" or len(frames) < 2:
@@ -673,6 +868,7 @@ class VirtualRuntime:
                              "output_target": state["joint_state"]["output_target"], "measured": None,
                              "imu": state["imu"], "buttons": state["buttons"], "owner": state["control"]["owner"],
                              "follow": state["control"]["follow"], "gripper": state["gripper"], "executor": state["executor"],
+                             "output": state.get("output"),
                              "health": state["health"], "robot_device_ms": self.robot_parts["control"]["t_ms"],
                              "clock_domain": "robot_monotonic_extended", "pc_received_ns": self.robot_pc_received_ns,
                              "pc_elapsed_ms": round((now - self.started) * 1000),
@@ -693,7 +889,7 @@ class VirtualRuntime:
                         await self.robot_link.request("stop")
                 asyncio.create_task(request_stop())
             self.interrupt_record("浏览器管理心跳超时")
-        if self.executor_kind == "robot_no_power":
+        if self.physical:
             if self.records.active:
                 if not self.robot_input_valid():
                     self.interrupt_record("无线输入无效或过期")
@@ -852,8 +1048,13 @@ def create_virtual_app(db_path=None, config_path=None, executor_kind="virtual"):
         return {"ok": True}
 
     @app.get("/api/executor/config")
-    @app.get("/api/virtual/config")
     async def config():
+        return rt().config_snapshot()
+
+    @app.get("/api/virtual/config")
+    async def virtual_config():
+        if rt().executor_kind != "virtual":
+            error("请使用当前执行端只读配置入口")
         return rt().config_snapshot()
 
     @app.post("/api/virtual/config")
@@ -901,7 +1102,34 @@ def create_virtual_app(db_path=None, config_path=None, executor_kind="virtual"):
     @app.post("/api/executor/initialize")
     async def initialize_executor(body: dict = Body(default={})):
         async with rt().lock:
+            if rt().powered:
+                rt().powered_binding(body)
             return await rt().initialize(body.get("request_id"))
+
+    @app.post("/api/executor/prepare")
+    async def prepare_executor(body: dict = Body(...)):
+        async with rt().lock:
+            return await rt().powered_action("prepare", body)
+
+    @app.post("/api/executor/enable-output")
+    async def enable_output(body: dict = Body(...)):
+        async with rt().lock:
+            return await rt().powered_action("enable_output", body)
+
+    @app.post("/api/executor/test-joint")
+    async def test_joint(body: dict = Body(...)):
+        async with rt().lock:
+            return await rt().powered_action("test_joint", body)
+
+    @app.post("/api/executor/disable-output")
+    async def disable_output(body: dict = Body(...)):
+        async with rt().lock:
+            return await rt().powered_action("disable_output", body)
+
+    @app.post("/api/executor/acceptance")
+    async def acceptance(body: dict = Body(...)):
+        async with rt().lock:
+            return rt().record_acceptance(body)
 
     @app.post("/api/control/heartbeat")
     async def manager_heartbeat(body: dict = Body(...)):
@@ -909,9 +1137,16 @@ def create_virtual_app(db_path=None, config_path=None, executor_kind="virtual"):
         return {"ok": True}
 
     @app.post("/api/control/stop")
+    @app.post("/api/executor/stop")
+    async def stop():
+        await rt().stop_control()
+        return {"ok": True}
+
     @app.post("/api/virtual/stop")
     @app.post("/api/replays/stop")
-    async def stop():
+    async def virtual_stop():
+        if rt().executor_kind != "virtual":
+            error("请使用当前执行端停止入口")
         await rt().stop_control()
         return {"ok": True}
 

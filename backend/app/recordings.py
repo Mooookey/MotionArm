@@ -136,6 +136,7 @@ class Recordings:
             executor = (data.get("metadata") or {}).get("executor")
             data["angles_are"] = ("virtual_joint_targets_estimated_preview" if executor == "virtual"
                                   else "software_output_targets_pwm_locked" if executor == "robot_no_power"
+                                  else "committed_software_targets_no_position_feedback" if executor == "robot_powered"
                                   else "applied_servo_targets_not_encoder_readings")
         return data
 

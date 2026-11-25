@@ -1,8 +1,11 @@
 # Engineering defaults only; not a validated physical configuration.
 # Production startup must refuse motion if calibration is unverified.
-protocol_version: 2
+protocol_version: 2 # ESP-NOW; USB version depends on the explicit executor mode.
 serial:
   baudrate: 115200
+  powered_baudrate: 230400
+  robot_no_power_protocol_version: 2
+  robot_powered_protocol_version: 3
   discovery_handshake_timeout_ms: 2400
   max_line_bytes: 512
   enable_auto_discovery: false
@@ -19,16 +22,20 @@ robot:
   serial_state_rate_hz: 5
   wireless_watchdog_ms_initial: 250
   manager_watchdog_ms: 300
-  output_locked: true
-  powered_mode_available: false
-  require_verified_calibration: true
+  output_locked_on_boot: true
+  no_power_permanent_output_lock: true
+  powered_mode_requires_explicit_build: true
+  powered_trial_profile: "config/robot_trial.json"
+  require_matching_profile_hash: true
   require_operator_initial_pose_confirm: true
 recording:
+  new_schema_version: 5
   database_path: "data/recordings/teleop.sqlite3"
   workcell_id: null
   allow_interrupted_recordings_for_replay: false
   max_record_minutes: 10
 replay:
+  executor: virtual_only
   send_rate_hz: 25
   preflight_token_ttl_seconds: 30
   allow_autoresume_after_reconnect: false

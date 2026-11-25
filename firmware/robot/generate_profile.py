@@ -35,6 +35,8 @@ def literal(value):
 
 
 def generate(profile):
+    if profile.get("schema_version") == 3:
+        return generate_trial(profile)
     for key in ("verified_on_hardware", "allow_arm", "operator_confirmed_initial_pose"):
         require(profile.get(key) is True, key)
     require(integer(profile.get("schema_version"), "schema_version") == 2, "schema_version (explicit startup angles required)")
@@ -138,6 +140,35 @@ def generate(profile):
             f'  {{\n    {region_text}\n  }}\n}};\n'), profile_id
 
 
+def generate_trial(profile):
+    """Scoped commissioning profile: does not assert full mechanical certification."""
+    require(profile.get("purpose") == "empty_load_small_range_trial", "scoped trial purpose")
+    require(profile.get("source_commit") == "ad5644f", "historical calibration source")
+    require(profile.get("supply_rating_v") == 5 and profile.get("supply_rating_a") == 6,
+            "operator reported 5V/6A rating")
+    require(profile.get("full_workspace_verified") is False and profile.get("load_verified") is False and
+            profile.get("thermal_safety_verified") is False, "unverified certification fields remain false")
+    require(profile.get("onsite_confirmation_required") is True, "runtime confirmation gate")
+    require(profile.get("gripper_limit_ms") == 5000, "5000ms non-renewable deadline")
+    require(profile.get("tick_nominal_us") == CALIBRATOR_TICK_US, "historical nominal timebase")
+    require(profile.get("base_mapping") == [[-45, 1010], [0, 1610], [45, 2000]], "piecewise base anchors")
+    require(profile.get("shoulder_mapping") == [[0, 1630], [45, 1030]], "upright shoulder anchor")
+    require(profile.get("elbow_mapping") == [[0, 1570], [45, 1050]], "upright elbow anchor")
+    require(profile.get("startup_deg") == [0, 45, 45], "startup angles")
+    require(profile.get("operating_limits_deg") == [[-3, 3], [42, 48], [42, 48]], "approved trial limits")
+    require(profile.get("speed_deg_s") == 2 and profile.get("acceleration_deg_s2") == 5 and
+            profile.get("gripper_rate_s") == 1, "approved trial rates")
+    require(profile.get("gripper_open_us") == 1130 and profile.get("gripper_close_us") == 1630, "gripper ratio anchors")
+    canonical = json.dumps(profile, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    identity = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    return ('#pragma once\n#include "PoweredOutput.h"\n'
+            '// Generated scoped trial; full travel, load and thermal safety remain unverified.\n'
+            'inline constexpr robot::TrialProfile kPoweredTrialProfile{\n'
+            f'  "{identity}",\n'
+            '  {-3,42,42}, {3,48,48}, {0,45,45}, 2,5,1,\n'
+            '  {1010,1610,2000}, {1630,1030}, {1570,1050}, 1130,1630,4.88f\n};\n'), identity
+
+
 def unique_fields(pairs):
     values = {}
     for key, value in pairs:
@@ -150,10 +181,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("calibration", type=Path)
     parser.add_argument("header", type=Path)
+    parser.add_argument("--trial", action="store_true", help="explicitly generate the bounded empty-load trial, not a verified full profile")
     args = parser.parse_args()
     try:
         profile = json.loads(args.calibration.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_fields)
-        header, profile_id = generate(profile)
+        if args.trial:
+            require(profile.get("schema_version") == 3, "--trial requires scoped schema3")
+            header, profile_id = generate_trial(profile)
+        else:
+            require(profile.get("schema_version") != 3, "scoped trial requires explicit --trial")
+            header, profile_id = generate(profile)
         args.header.write_text(header, encoding="ascii")
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         parser.error(str(error))

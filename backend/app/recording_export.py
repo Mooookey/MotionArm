@@ -17,7 +17,8 @@ def recording_csv(record):
     targets = [f"{kind}_{key}" for kind in ("requested", "output")
                for key in (*POSE_KEYS, "gripper_open_ratio")]
     common = ["t_ms", "source", "executor", "angle_convention", *targets]
-    modern = metadata.get("schema_version") in (3, 4)
+    modern = metadata.get("schema_version") in (3, 4, 5)
+    powered = metadata.get("schema_version") == 5
     if modern:
         writer.writerow([*common, "controller_version", "attitude_representation", "mounting_profile",
                          "roll_deg", "pitch_deg", *[f"q_{a}" for a in "wxyz"],
@@ -28,14 +29,16 @@ def recording_csv(record):
                          "errors", "who", "calibration_samples", "valid", "imu_seq", "device_ms",
                          "a", "b", "ac", "bc", "owner",
                          "gripper_state", "gripper_limit_ms", "gripper_elapsed_ms", "gripper_remaining_ms",
-                         "gripper_cycle_id", "gripper_auto_open_reason", "gripper_reclose_blocked", "output_locked"])
+                         "gripper_cycle_id", "gripper_auto_open_reason", "gripper_reclose_blocked", "output_locked",
+                         *(["profile_hash", "robot_boot_id", "wearable_boot_id", "output_stage", "pwm_enabled", "output_committed",
+                            "pwm_base", "pwm_shoulder", "pwm_elbow", "pwm_gripper", "last_write_ms", "write_errors"] if powered else [])])
     else:
         writer.writerow([*common, "roll_deg", "pitch_deg", "a", "b", "ac", "bc",
                          "short", "long", "mode", "owner", "legacy_payload"])
     for frame in record["frames"]:
         imu, buttons = frame.get("imu", {}), frame.get("buttons", {})
         row = [frame["t_ms"], record["source"], metadata.get("executor"), metadata.get("angle_convention"),
-               *[frame.get(kind, {}).get(key) for kind in ("requested", "output_target")
+               *[(frame.get(kind) or {}).get(key) for kind in ("requested", "output_target")
                  for key in (*POSE_KEYS, "gripper_open_ratio")]]
         if modern:
             follow = frame.get("follow", {})
@@ -50,6 +53,11 @@ def recording_csv(record):
                     *[buttons.get(k) for k in ("a", "b", "ac", "bc")], frame.get("owner"),
                     *[frame.get("gripper", {}).get(k) for k in ("state", "limit_ms", "elapsed_ms", "remaining_ms", "cycle_id", "auto_open_reason", "reclose_blocked")],
                     frame.get("executor", {}).get("output_locked")]
+            if powered:
+                physical = frame.get("output") or {}
+                row += [metadata.get("profile_hash"), frame.get("executor", {}).get("boot_id"), metadata.get("wearable_boot"),
+                        physical.get("stage"), physical.get("pwm_enabled"), physical.get("committed"),
+                        *vector(physical.get("pwm_ticks"), 4), physical.get("last_write_ms"), physical.get("write_errors")]
         else:
             row += [imu.get("roll_deg"), imu.get("pitch_deg"),
                     *[buttons.get(k) for k in ("a", "b", "ac", "bc", "short", "long")],

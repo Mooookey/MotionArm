@@ -435,7 +435,8 @@ class ExecutorApiTests(unittest.TestCase):
         self.assertFalse(self.runtime.controller.enabled)
 
     def test_selection_has_no_virtual_target_fallback_or_power_unlock(self):
-        self.assertEqual(self.client.post("/api/executor", json={"kind": "robot_powered"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/executor", json={"kind": "robot_powered"}).status_code, 200)
+        self.assertEqual(self.client.post("/api/executor/enable-output", json={"request_id": "no-device"}).status_code, 409)
         self.assertEqual(self.client.post("/api/executor", json={"kind": "robot_no_power"}).status_code, 200)
         state = self.status()
         self.assertIsNone(state["joint_state"]["requested"])

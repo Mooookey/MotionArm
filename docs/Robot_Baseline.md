@@ -1,6 +1,6 @@
 # 机械臂当前基线与3D装配参考
 
-基线日期：2026-11-18。历史演示源码为 [joint_demo_v2归档](../firmware/archive/joint_demo_v2/joint_demo_v2.ino)，记录见 [历史连续抓放](archive/Wide_Slow_Demo_V2.md)。当前入口是 [无动力执行端](17_No_Power_Executor.md)。结构化记录为 [robot_baseline.json](../config/robot_baseline.json)。这份标准固定当前开发口径，不代表完整机械极限或所有组合姿态均已实测。
+基线日期：2026-11-18。历史演示源码为 [joint_demo_v2归档](../firmware/archive/joint_demo_v2/joint_demo_v2.ino)，记录见 [历史连续抓放](archive/Wide_Slow_Demo_V2.md)。保留 [无动力执行端](17_No_Power_Executor.md)，新增 [小范围空载实体联调](18_Powered_Empty_Trial.md)。结构化记录为 [robot_baseline.json](../config/robot_baseline.json)。这份标准固定当前开发口径，不代表完整机械极限或所有组合姿态均已实测。
 
 ## 1. 最初竖直姿态：3D装配零点
 
@@ -52,6 +52,8 @@
 | 当前虚拟／robot保护 | 5000 ms，包含闭合推进，不可续期 | 软件期限，不代表热安全认证；无动力PWM永久锁定 |
 
 用户已报告低位高度合适。最新“高位旋转并返回”序列完成了离线检查与ESP32编译，尚无最新版本的现场复测反馈。完整硬限位、带载抓放、组合工作区、速度和电源均未完成定量验收。正式 `robot` 配置继续 `allow_arm=false`。
+
+2026-11-25接入使用独立 `robot_trial.json`，只复用这些历史锚点，限制为底座±3°、双臂42–48°、2°/s和5°/s²。它与空的正式ArmProfile隔离，不把上述未知项改成已验收。5V/6A为用户提供的额定值；通电、首次PWM和断电流程仍需按空载操作文档现场确认。
 
 ## 5. 尺寸与正运动学参考
 
