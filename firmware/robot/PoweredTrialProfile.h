@@ -2,7 +2,9 @@
 #include "PoweredOutput.h"
 // Generated scoped trial; full travel, load and thermal safety remain unverified.
 inline constexpr robot::TrialProfile kPoweredTrialProfile{
-  "sha256:673bb8f6dd5b2478f5e5c0fe698a8b5c10cb1a957dcb2edbbfd2ec926604063c",
-  {-3,42,42}, {3,48,48}, {0,45,45}, 2,5,1,
-  {1010,1610,2000}, {1630,1030}, {1570,1050}, 1130,1630,4.88f
+  "sha256:395bc263b9436fe91a9607744ce6df19d4a518f7a5f38086dc7406b636821e53",
+  {-45,20,20}, {45,60,60}, {0,45,45}, 15,30,1,
+  {1010,1610,2000}, {1630,1030}, {1570,1050}, 1130,1630,4.88f,
+  5, {{-15,-10,-5,0,5,10,15},{-10,-5,0,5,10,0,0},{-10,-5,0,5,10,0,0}}, {7,5,5},
+  {-1,-1}, "coordinated-angle-v4"
 };

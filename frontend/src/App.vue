@@ -8,7 +8,8 @@ import TelemetryChart from './TelemetryChart.vue'
 import { fallbackGeometry, poseAt, referencePose } from './geometry'
 import { nextAccelerationWarning } from './displayStability'
 import { buttonTelemetryFresh, coordinatedFollowLabel } from './controlPresentation'
-import { canViewHistory, outputStageLabel, poweredBinding } from './powered'
+import { canViewHistory, directObservationRequest, mappingSignsLabel, modelMapping, outputStageLabel, poweredBinding, recordedLimits, recordedMapping, rightTiltLabel } from './powered'
+import { diagnosticOffsets } from './telemetry'
 import type { Geometry, Point, Preflight, Recording, RecordingDetail, SimulationConfig } from './types'
 
 const device = useDevice(), route = useRoute(), router = useRouter()
@@ -18,10 +19,12 @@ const state = computed(() => device.snapshot)
 const executorKind = ref<'virtual' | 'robot_no_power' | 'robot_powered'>('virtual')
 const robot = computed(() => state.value?.executor.kind === 'robot_no_power' || state.value?.executor.kind === 'robot_powered')
 const powered = computed(() => state.value?.executor.kind === 'robot_powered')
+const liveMapping = computed(() => modelMapping(device.model, powered.value))
 const output = computed(() => state.value?.output ?? state.value?.executor.output)
 const outputLabel = computed(() => powered.value && (!device.fresh || !state.value?.executor.connected) ? '输出状态未确认 · 等待新鲜执行端遥测' : outputStageLabel(output.value?.stage))
 const supportsReady = ref(false), alignedReady = ref(false), powerReady = ref(false), releaseSupported = ref(false)
-const testAxis = ref('base'), testDelta = ref(3), acceptedAxis = ref('base'), acceptanceNote = ref('')
+const testAxis = ref('base'), testDelta = ref(0), acceptedAxis = ref('base'), acceptanceNote = ref('')
+const testOffsets = computed(() => diagnosticOffsets(device.model, testAxis.value))
 const acceptancePassed = ref(true)
 const pwmActive = computed(() => output.value?.pwm_enabled === true)
 const canReleaseOutput = computed(() => powered.value && device.fresh && !!state.value?.executor.connected && ['holding', 'unknown'].includes(output.value?.stage ?? ''))
@@ -44,6 +47,7 @@ const ghost = ref(false), axes = ref(false), dimensions = ref(false)
 const chartType = ref<'imu' | 'joints'>('imu'), paused = ref(false), frozen = ref<Point[]>([])
 const recordings = ref<Recording[]>([]), detail = ref<RecordingDetail | null>(null)
 const recordName = ref(''), preview = ref(false), cursor = ref(0), preflight = ref<Preflight | null>(null)
+const lastRecordingId = ref<string | null>(null)
 const defaultConfig: SimulationConfig = { deadzone_deg: 5, limits_deg: [[-45, 45], [0, 60], [0, 60]], max_velocity_deg_s: [20, 15, 15], max_acceleration_deg_s2: [60, 60, 60] }
 const form = ref<SimulationConfig>(structuredClone(defaultConfig))
 const axisLabels = ['底座', '大臂', '小臂']
@@ -63,6 +67,9 @@ const buttonsFresh = computed(() => buttonTelemetryFresh(device.fresh, state.val
 const relativeMapping = computed(() => state.value?.control.mapping === 'COORDINATED_RELATIVE_ANGLE')
 const runLabel = computed(() => device.fresh ? coordinatedFollowLabel(!!state.value?.control.enabled, !!state.value?.control.armed) : '等待有效遥测')
 const history = computed(() => preview.value || !!state.value?.replay.active)
+const historyMapping = computed(() => recordedMapping(detail.value?.metadata))
+const displayHistoryMetadata = computed(() => preview.value || state.value?.replay.active && state.value.replay.record_id === detail.value?.id ? detail.value?.metadata : undefined)
+const activeMapping = computed(() => history.value ? recordedMapping(displayHistoryMetadata.value) : liveMapping.value)
 const historicalFrames = computed(() => ['virtual', 'robot_no_power', 'robot_powered'].includes(String(detail.value?.metadata?.executor)) &&
   detail.value?.metadata?.angle_convention === 'base_yaw_shoulder_down_elbow_relative_down_gripper_open_ratio_v1'
   ? detail.value.frames.filter((f) => isPose(f.output_target) && isPose(f.requested)) : [])
@@ -75,7 +82,7 @@ const geometry = computed<Geometry>(() => {
   if (state.value?.replay.active && state.value.replay.geometry) return state.value.replay.geometry
   return device.model?.geometry ?? fallbackGeometry
 })
-const activeLimits = computed(() => powered.value && output.value?.trial_limits_deg ? output.value.trial_limits_deg : device.model?.config.limits_deg ?? defaultConfig.limits_deg)
+const activeLimits = computed(() => (history.value && recordedLimits(displayHistoryMetadata.value)) || (powered.value && output.value?.trial_limits_deg ? output.value.trial_limits_deg : device.model?.config.limits_deg ?? defaultConfig.limits_deg))
 const chartPoints = computed<Point[]>(() => preview.value ? historicalFrames.value.flatMap((f, index, all) => {
   const point: Point = { time: f.t_ms, roll: f.imu?.roll_deg ?? null, pitch: f.imu?.pitch_deg ?? null, requested: f.requested, output: f.output_target }
   return index && f.t_ms - all[index - 1]!.t_ms > 250 ? [{ time: f.t_ms - 1, roll: null, pitch: null, requested: null, output: null }, point] : [point]
@@ -103,6 +110,7 @@ const blockers = computed(() => state.value?.control.blockers ?? [])
 const gateLabels: Record<string, string> = { REPLAY: '历史回放中', INPUT_INVALID: '等待有效输入', DISABLED: '请启用并回初始', ACTIVE: '跟随中 · 短按 A 暂停', READY: '已暂停 · 短按 A 开始', PROTOCOL_INCOMPATIBLE: '请升级腕端四元数固件', ANGLE_AMBIGUOUS: '大角度有歧义 · 靠近启用参考' }
 const gateLabel = computed(() => !device.fresh ? '等待本地服务' : gateLabels[state.value?.control.gate_status ?? ''] ?? runLabel.value)
 const canInitialize = computed(() => device.fresh && !!state.value?.control.can_enable && !history.value)
+const canDirectObserve = computed(() => powered.value && device.realReady && !!state.value?.control.observation_ready && !history.value)
 const fmt = (n: number | null | undefined, digits = 1) => typeof n === 'number' && Number.isFinite(n) ? n.toFixed(digits) : '—'
 const vectorLabel = (values: number[] | null | undefined, digits = 3) => values ? values.map((n) => fmt(n, digits)).join(' / ') : '—'
 const date = (n: number) => new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -124,15 +132,17 @@ function selectExecutor() {
   device.releaseManagement()
   void act(async () => { await request('/api/executor', { kind: executorKind.value }); preview.value = false; await device.loadConfig() }, '执行端已切换，需显式初始化。')
 }
-function initialize() {
+function initialize(directObservation = false) {
   preview.value = false
   const epoch = managementEpoch
   void act(async () => {
-    const response = await request<{ manager_token: string }>('/api/executor/initialize', powered.value ? poweredBound() : {})
+    if (!device.fresh) throw new Error('等待当前有效遥测并核对执行端配置。')
+    const payload = directObservation ? directObservationRequest(state.value, device.managementPayload()) : powered.value ? poweredBound() : {}
+    const response = await request<{ manager_token: string }>('/api/executor/initialize', payload)
     if (epoch !== managementEpoch) return
     device.grantManagement(response.manager_token)
     await device.loadConfig()
-  }, '已请求捕获稳定参考并设置 0° / 45° / 45°、夹爪打开目标；以执行端遥测为准。短按 A 开始。')
+  }, directObservation ? '已请求直接初始化观察，未记录逐轴通过。初始化完成仍保持暂停；待 robot 遥测确认后短按 A 开始。' : '已请求捕获稳定参考并设置 0° / 45° / 45°、夹爪打开目标；以执行端遥测为准。短按 A 开始。')
 }
 function prepareOutput() {
   const epoch = managementEpoch
@@ -140,7 +150,7 @@ function prepareOutput() {
     const response = await request<{ manager_token: string }>('/api/executor/prepare', poweredBound())
     if (epoch !== managementEpoch) return
     device.grantManagement(response.manager_token)
-  }, '准备请求已接纳。输出状态以 robot 后续遥测为准；尚未授权 PWM。')
+  }, '准备请求已接纳。本操作不改变已有 PWM 状态，尚未授权姿态推进；以最新 robot 遥测为准。')
 }
 function enableOutput() {
   void act(async () => {
@@ -150,7 +160,10 @@ function enableOutput() {
   }, '使能请求已接纳，请观察实体是否保持启动姿态。ACK 不代表实体到位。')
 }
 function testJoint() {
-  void act(async () => { await request('/api/executor/test-joint', { ...poweredBound(), axis: ['base', 'shoulder', 'elbow'].indexOf(testAxis.value), offset_deg: testDelta.value }) }, '已接纳受限单轴检查，请现场观察方向和动作；以 robot 遥测确认输出提交。')
+  void act(async () => {
+    if (!testOffsets.value.includes(testDelta.value)) throw new Error('单轴检查步长不属于当前只读配置。')
+    await request('/api/executor/test-joint', { ...poweredBound(), axis: ['base', 'shoulder', 'elbow'].indexOf(testAxis.value), offset_deg: testDelta.value })
+  }, '已接纳受限单轴检查，请现场观察方向和动作；以 robot 遥测确认输出提交。')
 }
 function acceptAxis() {
   void act(async () => {
@@ -180,7 +193,7 @@ function saveConfig() {
 }
 function toggleChart() { if (!paused.value) frozen.value = [...device.points]; paused.value = !paused.value }
 function startRecording() {
-  void act(async () => { await request('/api/recordings/start', { name: recordName.value.trim() || '腕端示教 ' + new Date().toLocaleTimeString('zh-CN') }); await loadRecords() }, '正在录制 IMU、按钮、执行端软件目标和保护状态。')
+  void act(async () => { const record = await request<Recording>('/api/recordings/start', { name: recordName.value.trim() || '腕端示教 ' + new Date().toLocaleTimeString('zh-CN') }); lastRecordingId.value = record.id; await loadRecords() }, '已接纳录制请求，请以实时录制状态及动作档案的最终结果为准。')
 }
 function stopRecording() { void act(async () => { await request('/api/recordings/stop', {}); await loadRecords() }, '录制已归档。') }
 function selectRecord(record: Recording) {
@@ -208,12 +221,19 @@ function replayRecord() {
 }
 watch(() => device.model, (model) => { if (model) form.value = structuredClone(model.config) })
 watch(() => state.value?.executor.kind, (kind) => { if (kind) executorKind.value = kind })
+watch([testAxis, testOffsets], () => { if (!testOffsets.value.includes(testDelta.value)) testDelta.value = 0 })
 watch([() => state.value?.executor.kind, () => state.value?.executor.boot_id, () => state.value?.executor.profile_hash, () => device.fresh], () => {
   ++managementEpoch
   supportsReady.value = alignedReady.value = powerReady.value = releaseSupported.value = false
 })
 watch(() => route.path, () => { if (library.value) void loadRecords().catch(() => {}) })
-watch(() => state.value?.recording.active, (active, before) => { if (before && !active) void loadRecords().catch(() => {}) })
+watch(() => state.value?.recording.active, (active, before) => {
+  if (active) lastRecordingId.value = state.value?.recording.record_id ?? lastRecordingId.value
+  if (before && !active) void loadRecords().then(() => {
+    const record = recordings.value.find((r) => r.id === lastRecordingId.value)
+    message.value = record ? `录制${statusName(record.status)}${record.note ? '：' + record.note : '。'}` : '录制已结束或中断，请查看动作档案最终状态。'
+  }).catch(() => { message.value = '录制已结束或中断，请刷新动作档案确认最终状态。' })
+})
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   device.start()
@@ -262,14 +282,14 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
           <small v-if="robot">{{ powered ? 'PWM 提交与 ACK 均不代表实体到位；实际动作由现场观察记录。5V / 6A 为人工提供的电源额定值。' : '仅检查逻辑请求与目标，不能据此确认舵机方向、行程或实体到位。' }}</small>
         </section>
         <section v-if="powered && !settings" class="panel powered-panel" aria-labelledby="powered-heading">
-          <div class="panel-heading"><div><h2 id="powered-heading">空载输出操作</h2><p>底座 ±3° · 双臂 42–48° · 2°/s · 5°/s²；扩大范围需另行确认。</p></div><span class="tiny-tag">ROBOT USB V3 · 230400</span></div>
+          <div class="panel-heading"><div><h2 id="powered-heading">空载输出操作</h2><p>受限观察范围：底座 −45～+45° · 双臂 20–60° · 三轴 15°/s · 30°/s² · 死区 5°。这不是机械安全极限；配置变更后需重新准备、初始化，不自动恢复。</p></div><span class="tiny-tag">ROBOT USB V3 · 230400</span></div>
           <div class="powered-summary"><span>robot boot <b>{{ state?.executor.boot_id ?? '—' }}</b></span><span>配置 <code>{{ output?.profile_hash ?? '尚未确认' }}</code></span><span>动力 <b>{{ output?.power_confirmed ? '现场已报告接通（无电压传感器）' : '未由本会话确认' }}</b></span><span>PWM <b>{{ !output || !state?.executor.connected || !device.fresh ? '未确认' : output.stage === 'unknown' ? '状态未知' : pwmActive ? '持续输出' : '未启用' }}</b></span><span>最后成功写入 <b>{{ output?.last_write_ms == null ? '—' : output.last_write_ms + ' ms · robot 时钟' }}</b></span><span>写入错误 <b>{{ output?.write_errors ?? '—' }}</b></span></div>
           <p v-if="output?.stage === 'unknown'" class="inline-warning">PCA 通信异常，输出状态未知。不要依据软件判断保持或开爪成功；请现场托住并人工处置，禁止自动恢复。</p>
           <div class="powered-steps">
             <div><strong>1 · 准备</strong><p>确认板卡、配置和 PCA，输出保持当前状态。页面刷新后不自动恢复管理权。</p><button class="button secondary" :disabled="busy || !canPrepare" @click="prepareOutput">准备当前执行端</button></div>
             <div><strong>2 · 首次使能前现场确认</strong><p>请先托住机械臂，对齐底座 0°、大臂 45°、小臂 45°、夹爪打开，再接通独立动力。首次 PWM 从未知位置不保证平滑。</p><label><input v-model="supportsReady" type="checkbox" :disabled="busy || pwmActive">已托住机械臂</label><label><input v-model="alignedReady" type="checkbox" :disabled="busy || pwmActive">已人工对齐启动姿态并打开夹爪</label><label><input v-model="powerReady" type="checkbox" :disabled="busy || pwmActive">现场已接通 5V / 6A 动力，可直接人工掐断</label><button class="button primary" :disabled="busy || !canEnableOutput" @click="enableOutput">使能 PWM 并暂停保持</button></div>
-            <div><strong>3 · 逐轴小范围检查</strong><p>依次完成底座、大臂、小臂。正常通电保持 PWM 后无需持续托扶。检查命令只走受限诊断入口。</p><label>关节<select v-model="testAxis" :disabled="busy || !canTest"><option value="base">底座</option><option value="shoulder">大臂</option><option value="elbow">小臂</option></select></label><label>相对启动目标<select v-model.number="testDelta" :disabled="busy || !canTest"><option :value="-3">−3°</option><option :value="0">回启动目标</option><option :value="3">+3°</option></select></label><button class="button secondary" :disabled="busy || !canTest" @click="testJoint">提交一次单轴检查</button></div>
-            <div><strong>4 · 人工观察记录</strong><p>每轴观察通过后才允许整臂跟随；记录只针对此次空载范围，不是传感器反馈。</p><label>已观察通过<select v-model="acceptedAxis" :disabled="busy || !canObserve"><option v-for="(label, key) in acceptanceLabels" :key="key" :value="key">{{ label }}</option></select></label><label>观察结果<select v-model="acceptancePassed" :disabled="busy || !canObserve"><option :value="true">通过本次空载检查</option><option :value="false">未通过</option></select></label><label>现场说明<input v-model="acceptanceNote" maxlength="240" placeholder="方向、动作与异常观察" :disabled="busy || !canObserve"></label><button class="button secondary" :disabled="busy || !canObserve || !acceptanceNote.trim()" @click="acceptAxis">保存人工观察</button><small v-for="item in state?.executor.acceptance ?? []" :key="item.axis">{{ acceptanceLabels[item.axis] ?? item.axis }} · {{ item.passed ? '通过' : '未通过' }} · {{ item.note }}</small></div>
+            <div><strong>3 · 逐轴小范围检查</strong><p>常规诊断依次检查底座、大臂、小臂；本次也可使用直接观察入口省略剩余诊断。正常通电保持 PWM 后无需持续托扶。底座诊断仅 0 / ±5 / ±10 / ±15°，双臂仅 0 / ±5 / ±10°；底座 ±45°为跟随限位，不增加诊断步长分档。</p><label>关节<select v-model="testAxis" :disabled="busy || !canTest"><option value="base">底座</option><option value="shoulder">大臂</option><option value="elbow">小臂</option></select></label><label>相对启动目标<select v-model.number="testDelta" :disabled="busy || !canTest"><option v-for="offset in testOffsets" :key="offset" :value="offset">{{ offset === 0 ? '回启动目标' : (offset > 0 ? '+' : '') + offset + '°' }}</option></select></label><button class="button secondary" :disabled="busy || !canTest" @click="testJoint">提交一次单轴检查</button></div>
+            <div><strong>4 · 人工观察记录</strong><p>常规验收逐轴记录实际结果；也可按本次选择直接初始化受限观察，省略的逐轴检查不会记为通过。记录不是传感器反馈。</p><label>已观察通过<select v-model="acceptedAxis" :disabled="busy || !canObserve"><option v-for="(label, key) in acceptanceLabels" :key="key" :value="key">{{ label }}</option></select></label><label>观察结果<select v-model="acceptancePassed" :disabled="busy || !canObserve"><option :value="true">通过本次空载检查</option><option :value="false">未通过</option></select></label><label>现场说明<input v-model="acceptanceNote" maxlength="240" placeholder="方向、动作与异常观察" :disabled="busy || !canObserve"></label><button class="button secondary" :disabled="busy || !canObserve || !acceptanceNote.trim()" @click="acceptAxis">保存人工观察</button><small v-for="item in state?.executor.acceptance ?? []" :key="item.axis">{{ acceptanceLabels[item.axis] ?? item.axis }} · {{ item.passed ? '通过' : '未通过' }} · {{ item.note }}</small></div>
             <div><strong>5 · 结束与计划断电</strong><p>先停止跟随并请求开爪，承重轴继续保持。释放 PWM 或人工断电前，必须先托住；不要直接断电让机械臂下垂。</p><button class="button secondary" :disabled="!canStop" @click="stop">停止推进并请求开爪 · 保持 PWM</button><label><input v-model="releaseSupported" type="checkbox" :disabled="busy || !canReleaseOutput">已托住，可释放承重轴 PWM</label><button class="button secondary" :disabled="busy || !canReleaseOutput || !!state?.control.enabled || !releaseSupported || output?.diagnostic_active" @click="disableOutput">确认托住后释放 PWM</button><small>停止或管理会话失效后，仍可在当前连接中确认托住并请求释放输出，无需重新准备。断电时继续托住。</small></div>
           </div>
           <dl class="pwm-targets"><div v-for="(ticks, i) in output?.pwm_ticks ?? []" :key="i"><dt>{{ [...axisLabels, '夹爪'][i] }} {{ output?.stage === 'holding' ? '最近成功提交 PWM' : '历史 PWM 提交' }}</dt><dd>{{ ticks }} counts</dd></div></dl>
@@ -287,7 +307,7 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
               <div class="button-readouts"><div :class="{ pressed: buttonsFresh && state?.buttons.a }"><kbd>A</kbd><span>A · GPIO25 · 短按开始/暂停<small>{{ buttonsFresh ? state?.buttons.a ? '已按下' : '已释放' : '不可用' }}</small></span><i class="status-dot" :class="{ good: buttonsFresh && state?.buttons.a }"></i></div><div :class="{ pressed: buttonsFresh && state?.buttons.b }"><kbd>B</kbd><span>B · GPIO26 · 短按夹爪开合<small>{{ buttonsFresh ? state?.buttons.b ? '已按下' : '已释放' : '不可用' }}</small></span><i class="status-dot" :class="{ good: buttonsFresh && state?.buttons.b }"></i></div></div>
               <div class="toggle-state" :class="{ running: device.fresh && state?.control.enabled && state?.control.armed }"><strong>{{ runLabel }}</strong><small>A 短按切换运行状态，松手不暂停。</small></div>
               <div class="mode-strip"><span>PITCH 同向协同</span><strong>大臂 + 小臂 · 1 : 1</strong></div>
-              <div class="mapping-guide"><strong>{{ history ? '历史目标回放' : relativeMapping ? '大小臂协同跟随' : '等待协同跟随模式' }}<span>1 : 1</span></strong><p>{{ history ? '按录制关节目标回放；下方腕端诊断仍属于独立的当前输入。' : '固定手背安装：芯片正面向下，X→右，Y→肘，Z→下。右倾底座顺时针，抬手双臂抬起。' }}</p></div>
+              <div class="mapping-guide"><strong>{{ history ? '历史目标回放' : relativeMapping ? '大小臂协同跟随' : '等待协同跟随模式' }}<span>1 : 1</span></strong><p>{{ history ? '按录制关节目标回放；下方腕端诊断仍属于独立的当前输入。' : '固定手背安装：芯片正面向下，X→右，Y→肘，Z→下。' + rightTiltLabel(liveMapping.signs) + '，抬手双臂抬起。' }}</p></div>
               <dl class="mini-diagnostics"><div><dt>WHO_AM_I</dt><dd>{{ state?.imu.who == null ? '—' : '0x' + state.imu.who.toString(16).toUpperCase() }}</dd></div><div><dt>温度</dt><dd>{{ fmt(state?.imu.temp_c) }} °C</dd></div><div><dt>加速度模长</dt><dd :class="{ amber: diagnosticWarning }">{{ fmt(state?.imu.norm_g, 3) }} g</dd></div><div><dt>I²C 错误</dt><dd>{{ state?.imu.errors ?? '—' }}</dd></div></dl>
               <details class="attitude-diagnostics">
                 <summary>完整姿态与三轴诊断 <span>{{ device.realReady ? '当前输入' : '历史接收值' }}</span></summary>
@@ -326,12 +346,14 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
                 <p class="follow-anchor-hint">{{ history ? '此处为实时腕端参考；历史模型只使用录制目标。' : '参考只在启用时捕获；A 仅切换开始/暂停。' }}</p>
                 <div class="neutral-angle-label"><span>相对启用参考</span><b>R {{ fmt(state?.imu.roll_deg) }}° / P {{ fmt(state?.imu.pitch_deg) }}°</b></div>
                 <div class="neutral-angle-label"><span>会话参考</span><b>{{ referenceQuaternion ? '四元数已捕获' : '尚未初始化' }}</b></div>
-                <div class="neutral-angle-label"><span>关节映射符号</span><b>底座 +1 / 双臂 −1</b></div>
+                <div class="neutral-angle-label"><span>{{ history ? '记录映射符号' : '关节映射符号' }}</span><b>{{ mappingSignsLabel(activeMapping.signs) }}</b></div>
                 <ul class="gate-blockers"><li v-for="blocker in blockers.slice(0, 2)" :key="blocker">{{ blocker }}</li></ul>
               </div>
-              <button class="button primary full-width prepare-button" :disabled="busy || !canInitialize" @click="initialize">{{ powered ? '初始化参考并限速回初始' : '启用并回初始' }}<span>↗</span></button>
-              <p class="prepare-hint">{{ powered ? '先完成三轴人工检查。松开 A/B 放稳 0.5 秒后初始化，限速回到启动目标并保持暂停；短按 A 开始。' : '松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。' }}</p>
-              <button class="button secondary full-width reset-button" :disabled="busy || configLocked || preview || robot" @click="reset">复位至 45° 启动目标</button>
+              <button class="button primary full-width prepare-button" :disabled="busy || !canInitialize" @click="initialize()">{{ powered ? '初始化参考并限速回初始' : '启用并回初始' }}<span>↗</span></button>
+              <p class="prepare-hint">{{ powered ? '常规初始化要求逐轴记录；直接观察入口仅省略该项，仍需准备、稳定输入及 PWM 保持。松开 A/B 放稳 0.5 秒，初始化后保持暂停，短按 A 开始。' : '松开 A/B 放稳 0.5 秒，启用回初始；短按 A 开始，B 控制夹爪。' }}</p>
+              <div v-if="powered" class="direct-observation-group"><button class="button secondary full-width direct-observation-button" :disabled="busy || !canDirectObserve" @click="initialize(true)">直接初始化并观察</button>
+              <p v-if="powered" class="prepare-hint">按本次选择省略剩余逐轴诊断，仅进行批准范围内空载跟随观察，不补写验收通过。此按钮只初始化；完成后仍暂停，A 点击才开始。</p><p v-if="state?.control.direct_observation" class="prepare-hint">本次直接观察：{{ state.control.direct_observation.note }} 未验收轴：{{ state.control.direct_observation.unaccepted_axes.map((axis) => acceptanceLabels[axis] ?? axis).join(' / ') || '无（以现有人工记录为准）' }}。</p></div>
+              <button v-if="!robot" class="button secondary full-width reset-button" :disabled="busy || configLocked || preview || robot" @click="reset">复位至 45° 启动目标</button>
               <p class="control-hint">{{ reason }}</p>
               <p class="follow-limit-hint" :class="{ active: !history && state?.joint_state.limits.some(Boolean) }">超出范围已截住；退回有效角区继续跟随，回到启用手势回初始。</p>
               <p v-if="state?.control.fault" class="inline-warning">{{ statusLabels[state.control.fault] ?? state.control.fault }}</p>
@@ -345,11 +367,11 @@ onBeforeUnmount(() => { device.stop(); clearInterval(refreshTimer) })
 
           <section class="panel recording-panel"><div class="recording-overview"><span class="record-icon" :class="{ recording: state?.recording.active }">●</span><div><h2>{{ state?.recording.active ? '正在录制' : '示教录制' }}</h2><p>{{ state?.recording.active ? state.recording.frames + ' 帧 · 松开 A 继续记录保持状态' : '记录真实 IMU、按钮、软件目标和夹爪保护事件' }}</p></div></div><div class="recording-actions"><input v-model="recordName" aria-label="录制名称" placeholder="为这次动作命名" maxlength="120" :disabled="!!state?.recording.active || busy"><button v-if="!state?.recording.active" class="button secondary" :disabled="busy || !canRecord" @click="startRecording">● 开始录制</button><button v-else class="button record-stop" :disabled="busy || !device.fresh" @click="stopRecording">■ 结束并保存</button><RouterLink v-if="!library" to="/recordings" class="text-button">查看动作库 →</RouterLink></div></section>
 
-          <section v-if="library" class="panel library-panel"><div class="panel-heading"><div><h2>动作档案</h2><p>历史回放与实时控制互斥，允许在 IMU 离线时查看。</p></div><button class="button secondary" :disabled="busy" @click="act(loadRecords)">刷新列表</button></div><div v-if="!recordings.length" class="empty-library"><span>◷</span><strong>还没有动作记录</strong><p>连接腕端并启用虚拟控制后，即可录制第一段示教。</p></div><div v-else class="recording-list"><article v-for="record in recordings" :key="record.id" :class="{ selected: detail?.id === record.id }"><span class="recording-symbol">▥</span><div class="recording-name"><strong>{{ record.name }}</strong><small>{{ date(record.created_ms) }} · {{ (record.duration_ms / 1000).toFixed(1) }}s · {{ record.frame_count }} 帧 · {{ record.source }}</small><p v-if="record.note">{{ record.note }}</p></div><span class="record-status" :class="record.status">{{ statusName(record.status) }}</span><button class="button secondary" :disabled="busy || record.status === 'recording' || !device.fresh" @click="selectRecord(record)">查看</button><a class="text-button" :href="'/api/recordings/' + record.id + '/export?format=json'" download>JSON ↓</a><a class="text-button" :href="'/api/recordings/' + record.id + '/export?format=csv'" download>CSV ↓</a></article></div><div v-if="detail" class="selected-record"><div><strong>{{ detail.name }}</strong><p v-if="!historicalFrames.length" class="amber">旧数据的角度约定不明确，仅支持查看元数据和导出。</p><p v-else-if="detail.status !== 'completed'" class="amber">录制不完整，可逐帧查看；不允许连续自动回放。</p><p v-else>虚拟执行端 · 历史目标数据 · 1× 回放</p></div><button class="button primary" :disabled="busy || !device.fresh || !historicalFrames.length || detail.status !== 'completed' || !!state?.replay.active || !!state?.recording.active || !!state?.control.enabled" @click="replayRecord">▶ 开始虚拟回放</button></div></section>
+          <section v-if="library" class="panel library-panel"><div class="panel-heading"><div><h2>动作档案</h2><p>历史回放与实时控制互斥，允许在 IMU 离线时查看。</p></div><button class="button secondary" :disabled="busy" @click="act(loadRecords)">刷新列表</button></div><div v-if="!recordings.length" class="empty-library"><span>◷</span><strong>还没有动作记录</strong><p>连接腕端并启用虚拟控制后，即可录制第一段示教。</p></div><div v-else class="recording-list"><article v-for="record in recordings" :key="record.id" :class="{ selected: detail?.id === record.id }"><span class="recording-symbol">▥</span><div class="recording-name"><strong>{{ record.name }}</strong><small>{{ date(record.created_ms) }} · {{ (record.duration_ms / 1000).toFixed(1) }}s · {{ record.frame_count }} 帧 · {{ record.source }}</small><p v-if="record.note">{{ record.note }}</p></div><span class="record-status" :class="record.status">{{ statusName(record.status) }}</span><button class="button secondary" :disabled="busy || record.status === 'recording' || !device.fresh" @click="selectRecord(record)">查看</button><a class="text-button" :href="'/api/recordings/' + record.id + '/export?format=json'" download>JSON ↓</a><a class="text-button" :href="'/api/recordings/' + record.id + '/export?format=csv'" download>CSV ↓</a></article></div><div v-if="detail" class="selected-record"><div><strong>{{ detail.name }}</strong><p v-if="!historicalFrames.length" class="amber">旧数据的角度约定不明确，仅支持查看元数据和导出。</p><p v-else-if="detail.status !== 'completed'" class="amber">录制不完整，可逐帧查看；不允许连续自动回放。</p><p v-else>虚拟执行端 · 历史目标数据 · 1× 回放</p><p>记录映射 {{ historyMapping.version ?? '未记录' }} · {{ mappingSignsLabel(historyMapping.signs) }}</p></div><button class="button primary" :disabled="busy || !device.fresh || !historicalFrames.length || detail.status !== 'completed' || !!state?.replay.active || !!state?.recording.active || !!state?.control.enabled" @click="replayRecord">▶ 开始虚拟回放</button></div></section>
         </template>
 
         <template v-else>
-          <div class="settings-grid"><section class="panel settings-panel"><div class="panel-heading"><div><h2>运动与输入参数</h2><p>停止控制后可编辑，保存后需要重新启用。</p></div><span class="tiny-tag">仿真参数</span></div><form @submit.prevent="saveConfig"><fieldset :disabled="configLocked || busy"><div class="settings-fields"><label>角度软死区 <span><input v-model.number="form.deadzone_deg" type="number" min="0.5" max="20" step="0.5" required> °</span></label><div class="mapping-reference"><span>大小臂同向协同</span><strong>1 : 1</strong><small>输出目标保留限速和加速度约束。</small></div><div class="fixed-mounting"><span>固定手背安装</span><strong>X 向右 · Y 指向手肘 · Z 向下</strong><small>芯片正面向下。控制坐标：Roll = −Y，Pitch = +X；关节映射符号：底座 +1、双臂 −1。</small></div></div><div class="settings-axis" v-for="(name, i) in axisLabels" :key="name"><strong>{{ name }}</strong><label>最小角 °<input v-model.number="form.limits_deg[i]![0]" type="number" :min="i === 0 ? -90 : 0" :max="i === 0 ? 89 : 89" step="1" required></label><label>最大角 °<input v-model.number="form.limits_deg[i]![1]" type="number" min="1" max="90" step="1" required></label><label>速度 °/s<input v-model.number="form.max_velocity_deg_s[i]" type="number" min="1" max="90" step="1" required></label><label>加速度 °/s²<input v-model.number="form.max_acceleration_deg_s2[i]" type="number" min="1" max="360" step="1" required></label></div><div class="settings-footer"><button type="submit" class="button primary">保存仿真参数</button><span>{{ configLocked ? '请先停止控制和录制' : '仅影响虚拟执行端' }}</span></div></fieldset></form></section><section class="panel model-reference"><div class="panel-heading"><h2>装配与手势参考</h2></div><div class="reference-glyph">⊥</div><h3>竖直零姿态</h3><p>大臂与小臂均竖直，底座偏航 0°。模型定义与 45° 启动目标分开保存。</p><dl><div v-for="(value, key) in device.model?.geometry ?? fallbackGeometry" :key="key"><dt>{{ ({ base_width: '底板宽', table_to_shoulder_axis: '肩轴高度', shoulder_to_elbow_axis: '肩肘轴距', elbow_to_gripper_mount: '肘至安装面', gripper_mount_to_tip: '安装面至爪尖' })[key] }}</dt><dd>{{ value }} mm</dd></div></dl><div class="neutral-reference"><span>当前会话参考四元数（w / x / y / z）</span><strong>{{ vectorLabel(referenceQuaternion, 4) }}</strong><small>只在“启用并回初始”时捕获，不写入配置、不跨重启恢复；A 仅切换开始/暂停。</small></div></section></div><section class="panel profile-info"><span class="eyebrow">PROFILE IDENTITY</span><p><strong>仿真配置</strong><code>{{ device.model?.config_id ?? '等待配置' }}</code></p><p><strong>几何基线</strong><code>{{ device.model?.baseline_id ?? '等待配置' }}</code></p><p><strong>真实轴角</strong><span>未配备外部位置反馈 · measured = null</span></p></section>
+          <div class="settings-grid"><section class="panel settings-panel"><div class="panel-heading"><div><h2>运动与输入参数</h2><p>停止控制后可编辑，保存后需要重新启用。</p></div><span class="tiny-tag">仿真参数</span></div><form @submit.prevent="saveConfig"><fieldset :disabled="configLocked || busy"><div class="settings-fields"><label>角度软死区 <span><input v-model.number="form.deadzone_deg" type="number" min="0.5" max="20" step="0.5" required> °</span></label><div class="mapping-reference"><span>大小臂同向协同</span><strong>1 : 1</strong><small>输出目标保留限速和加速度约束。</small></div><div class="fixed-mounting"><span>固定手背安装</span><strong>X 向右 · Y 指向手肘 · Z 向下</strong><small>芯片正面向下。控制坐标：Roll = −Y，Pitch = +X；关节映射符号：{{ mappingSignsLabel(liveMapping.signs) }}。</small></div></div><div class="settings-axis" v-for="(name, i) in axisLabels" :key="name"><strong>{{ name }}</strong><label>最小角 °<input v-model.number="form.limits_deg[i]![0]" type="number" :min="i === 0 ? -90 : 0" :max="i === 0 ? 89 : 89" step="1" required></label><label>最大角 °<input v-model.number="form.limits_deg[i]![1]" type="number" min="1" max="90" step="1" required></label><label>速度 °/s<input v-model.number="form.max_velocity_deg_s[i]" type="number" min="1" max="90" step="1" required></label><label>加速度 °/s²<input v-model.number="form.max_acceleration_deg_s2[i]" type="number" min="1" max="360" step="1" required></label></div><div class="settings-footer"><button type="submit" class="button primary">保存仿真参数</button><span>{{ configLocked ? '请先停止控制和录制' : '仅影响虚拟执行端' }}</span></div></fieldset></form></section><section class="panel model-reference"><div class="panel-heading"><h2>装配与手势参考</h2></div><div class="reference-glyph">⊥</div><h3>竖直零姿态</h3><p>大臂与小臂均竖直，底座偏航 0°。模型定义与 45° 启动目标分开保存。</p><dl><div v-for="(value, key) in device.model?.geometry ?? fallbackGeometry" :key="key"><dt>{{ ({ base_width: '底板宽', table_to_shoulder_axis: '肩轴高度', shoulder_to_elbow_axis: '肩肘轴距', elbow_to_gripper_mount: '肘至安装面', gripper_mount_to_tip: '安装面至爪尖' })[key] }}</dt><dd>{{ value }} mm</dd></div></dl><div class="neutral-reference"><span>当前会话参考四元数（w / x / y / z）</span><strong>{{ vectorLabel(referenceQuaternion, 4) }}</strong><small>只在“启用并回初始”时捕获，不写入配置、不跨重启恢复；A 仅切换开始/暂停。</small></div></section></div><section class="panel profile-info"><span class="eyebrow">PROFILE IDENTITY</span><p><strong>仿真配置</strong><code>{{ device.model?.config_id ?? '等待配置' }}</code></p><p><strong>几何基线</strong><code>{{ device.model?.baseline_id ?? '等待配置' }}</code></p><p><strong>真实轴角</strong><span>未配备外部位置反馈 · measured = null</span></p></section>
         </template>
         <footer class="page-footer"><span>MotionArm Lab <i>/</i> {{ executorLabel }} · 软件目标／估算预览</span><span>仿真参数不代表实机安全标定</span></footer>
       </main>

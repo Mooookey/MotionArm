@@ -54,23 +54,32 @@ int main(){
   assert(changedFailed.send().find("REQUEST_ID_REUSED")!=std::string::npos);
   Message enable("enable_output",7);enable.bound("e1").yes("supported").yes("power_confirmed").yes("startup_aligned");
   assert(enable.send().find("\"ok\":true")!=std::string::npos);assert(Wire.effectiveWrites==1&&output.enabled());
-  Message changed("test_joint",8);changed.bound("e1").number("axis",0).number("offset_deg",3);
+  Message baseFollowOnly("test_joint",8);baseFollowOnly.bound("reject-base-20").number("axis",0).number("offset_deg",20);
+  assert(baseFollowOnly.send().find("DIAGNOSTIC_REJECTED")!=std::string::npos && !controller.diagnosticActive);
+  Message fractional("test_joint",9);fractional.bound("reject-fractional").number("axis",0).number("offset_deg",5.0000001);
+  assert(fractional.send().find("DIAGNOSTIC_REJECTED")!=std::string::npos && !controller.diagnosticActive);
+  Message armOutside("test_joint",10);armOutside.bound("reject-arm-15").number("axis",1).number("offset_deg",15);
+  assert(armOutside.send().find("DIAGNOSTIC_REJECTED")!=std::string::npos && !controller.diagnosticActive);
+  Message oldContinuous("test_joint",11);oldContinuous.bound("reject-old-continuous").number("axis",0).number("offset_deg",3);
+  assert(oldContinuous.send().find("DIAGNOSTIC_REJECTED")!=std::string::npos && !controller.diagnosticActive);
+  Message changed("test_joint",12);changed.bound("e1").number("axis",0).number("offset_deg",5);
   assert(changed.send().find("REQUEST_ID_REUSED")!=std::string::npos);
-  Message diagnostic("test_joint",9);diagnostic.bound("d1").number("axis",0).number("offset_deg",3);
+  Message diagnostic("test_joint",13);diagnostic.bound("d1").number("axis",0).number("offset_deg",5);
   assert(diagnostic.send().find("\"ok\":true")!=std::string::npos);assert(controller.diagnosticActive);
-  hostNow=660;loop();const float committed=output.target[0];assert(committed>0&&committed<.01f);
-  Message stopMessage("stop",10);stopMessage.session();assert(stopMessage.send().find("\"ok\":true")!=std::string::npos);
+  hostNow=660;loop();const float committed=output.target[0];
+  assert(committed>0&&committed<=kPoweredTrialProfile.acceleration*.02f*.02f+.0001f);
+  Message stopMessage("stop",14);stopMessage.session();assert(stopMessage.send().find("\"ok\":true")!=std::string::npos);
   assert(controller.qOut[0]==committed&&!controller.hasReference&&!controller.enabled);
   const unsigned writes=Wire.effectiveWrites;
-  Message duplicate("enable_output",11);duplicate.bound("e1").yes("supported").yes("power_confirmed").yes("startup_aligned");
+  Message duplicate("enable_output",15);duplicate.bound("e1").yes("supported").yes("power_confirmed").yes("startup_aligned");
   assert(duplicate.send().find("\"ok\":true")!=std::string::npos);assert(Wire.effectiveWrites==writes&&!output.prepared);
-  Message prep2("prepare",12);prep2.bound("p2");assert(prep2.send().find("\"ok\":true")!=std::string::npos);
-  Message diag2("test_joint",13);diag2.bound("d2").number("axis",0).number("offset_deg",3);diag2.send();
+  Message prep2("prepare",16);prep2.bound("p2");assert(prep2.send().find("\"ok\":true")!=std::string::npos);
+  Message diag2("test_joint",17);diag2.bound("d2").number("axis",0).number("offset_deg",5);diag2.send();
   hostNow+=301;loop();assert(!managerActive&&!output.prepared&&!controller.diagnosticActive);
   assert(controller.qOut[0]==committed&&output.target[0]==committed);assert(output.enabled());
   // A bus failure never commits a speculative target and never auto-FULL_OFFs.
-  sample(hostNow+40);Message prep3("prepare",14);prep3.bound("p3");prep3.send();
-  Message diag3("test_joint",15);diag3.bound("d3").number("axis",0).number("offset_deg",3);diag3.send();
+  sample(hostNow+40);Message prep3("prepare",18);prep3.bound("p3");prep3.send();
+  Message diag3("test_joint",19);diag3.bound("d3").number("axis",0).number("offset_deg",5);diag3.send();
   const unsigned offWrites=Wire.fullOffWrites;Wire.ok=false;
   // Quantized targets may legitimately avoid I2C until the next tick changes.
   float lastSuccessful=output.target[0];
@@ -80,11 +89,11 @@ int main(){
   const float faultTarget=output.target[0];
   Wire.ok=true;hostNow+=501;loop();assert(output.stage==robot::PoweredOutput::Stage::Unknown);
   assert(output.target[0]==faultTarget&&controller.qOut[0]==faultTarget);
-  Message release("disable_output",16);release.bound("off1");assert(release.send().find("SUPPORT_CONFIRMATION_REQUIRED")!=std::string::npos);
+  Message release("disable_output",20);release.bound("off1");assert(release.send().find("SUPPORT_CONFIRMATION_REQUIRED")!=std::string::npos);
   assert(Wire.fullOffWrites==offWrites);
-  Message releaseOk("disable_output",17);releaseOk.bound("off2").yes("supported");releaseOk.send();
+  Message releaseOk("disable_output",21);releaseOk.bound("off2").yes("supported");releaseOk.send();
   assert(output.locked()&&lockedPcaReadable());
-  sample(hostNow+40);Message prep4("prepare",18);prep4.bound("p4");prep4.send();assert(output.prepared);
+  sample(hostNow+40);Message prep4("prepare",22);prep4.bound("p4");prep4.send();assert(output.prepared);
   --f.bc;sample(hostNow+40);assert(!controller.valid(hostNow));loop();
   assert(!output.prepared&&!managerActive&&!controller.hasReference);
   std::cout<<"actual powered dispatch/loop gates, idempotency, STOP/timeout and I2C failure passed\n";
@@ -103,13 +112,13 @@ int main(){
   for(unsigned i=0;i<robot::ManagementOutbox::capacity;++i)ack(400+i,"command","OLD_RESPONSE");
   assert(managementResponses.full());
   const auto beforeFull=lastCommand;
-  Message overflow("init",500);overflow.session().text("request_id","must-not-run");
+  Message overflow("init",504);overflow.session().text("request_id","must-not-run");
   assert(overflow.send().empty());assert(lastCommand==beforeFull);
   // STOP remains effective under saturation, and its reply is retained.
-  Message saturatedStop("stop",501);saturatedStop.session();assert(saturatedStop.send().empty());
+  Message saturatedStop("stop",505);saturatedStop.session();assert(saturatedStop.send().empty());
   assert(managementResponses.count()==1 && !controller.enabled && !controller.hasReference);
   // New HELLO supersedes all queued responses from the old management session.
-  Message replacementHello("hello",502);replacementHello.text("role","pc");assert(replacementHello.send().empty());
+  Message replacementHello("hello",506);replacementHello.text("role","pc");assert(replacementHello.send().empty());
   assert(managementResponses.count()==1);Serial.txCapacity=8192;flushManagementResponses();
   assert(Serial.output.find("hello_ack")!=std::string::npos && Serial.output.find("OLD_RESPONSE")==std::string::npos);
   assert(Serial.output.find("\"request_type\":\"stop\"")==std::string::npos);

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include "PoweredOutput.h"
 
 // No Arduino or PWM dependency. All positions are software targets, not feedback.
 namespace robot {
@@ -21,23 +22,28 @@ class Controller {
   uint32_t eventDrops = 0, outOfOrder = 0;
   bool trial = false, initializing = false, diagnosticActive = false;
   float low[3] = {-45,0,0}, high[3] = {45,60,60}, speeds[3] = {20,15,15};
-  float acceleration = 60, gripRate = 5;
-  void configureTrial() {
-    trial=true;low[0]=-3;high[0]=3;low[1]=low[2]=42;high[1]=high[2]=48;
-    for(float &v:speeds)v=2;
-    acceleration=5;gripRate=1;
+  float acceleration = 60, gripRate = 5, deadzone=5;
+  float startup[3]={0,45,45};
+  int8_t jointSigns[2]={1,-1}; // Preserve virtual/no-power v3 defaults.
+  void configureTrial(const TrialProfile &profile) {
+    trial=true;trialProfile_=&profile;
+    for(unsigned i=0;i<3;++i){low[i]=profile.low[i];high[i]=profile.high[i];speeds[i]=profile.speed;startup[i]=profile.startup[i];}
+    acceleration=profile.acceleration;gripRate=profile.gripRate;deadzone=profile.deadzone;
+    for(unsigned i=0;i<2;++i)jointSigns[i]=profile.jointSigns[i];
   }
   void managementEvent(const char *code,uint32_t now) { event(code,now); }
   void seedStartupOutput() {
-    qReq[0]=qOut[0]=0;qReq[1]=qReq[2]=qOut[1]=qOut[2]=45;
+    for(unsigned i=0;i<3;++i)qReq[i]=qOut[i]=startup[i];
     for(float &v:velocity)v=0;
     openReq=openOut=1;gripState=GripState::OpenReady;gripReady_=false;
   }
   bool testJoint(unsigned axis,float offset,uint32_t now) {
-    if (!trial || axis>2 || !std::isfinite(offset) || std::fabs(offset)>3 ||
+    if (!trial || !trialProfile_ || !trialProfile_->permitsDiagnostic(axis,offset) ||
         enabled || armed || diagnosticActive || fault || !valid(now) || openOut<1) return false;
+    const float target=startup[axis]+offset;
+    if(target<low[axis] || target>high[axis])return false;
     stop("DIAGNOSTIC",now);
-    qReq[axis]=(axis?45:0)+offset;diagnosticActive=true;reason="DIAGNOSTIC";
+    qReq[axis]=target;diagnosticActive=true;reason="DIAGNOSTIC";
     lastTick_=now;haveTick_=true;event("JOINT_TEST",now);return true;
   }
 
@@ -79,9 +85,9 @@ class Controller {
     }
     normalize(sum); std::memcpy(reference, sum, sizeof(reference));
     hasReference = enabled = true; armed = ambiguous = false;
-    qReq[0] = 0; qReq[1] = qReq[2] = 45;
-    if(!trial){qOut[0]=0;qOut[1]=qOut[2]=45;}
-    initializing=trial && (std::fabs(qOut[0])>.001f || std::fabs(qOut[1]-45)>.001f || std::fabs(qOut[2]-45)>.001f);
+    for(unsigned i=0;i<3;++i)qReq[i]=startup[i];
+    if(!trial)for(unsigned i=0;i<3;++i)qOut[i]=startup[i];
+    initializing=trial && (std::fabs(qOut[0]-startup[0])>.001f || std::fabs(qOut[1]-startup[1])>.001f || std::fabs(qOut[2]-startup[2])>.001f);
     diagnosticActive=false;
     for (float &v : velocity) v = 0;
     openReq = 1;if(!trial)openOut=1;gripState = GripState::OpenReady; gripReady_ = true;
@@ -196,6 +202,7 @@ class Controller {
     out = events_[eventRead_]; eventRead_ = (eventRead_+1)%eventCapacity; --eventCount_; return true;
   }
  private:
+  const TrialProfile *trialProfile_=nullptr;
   static constexpr uint8_t stableCapacity = 24, eventCapacity = 16;
   struct Sample { uint32_t ms; float q[4]; };
   Sample stable_[stableCapacity]{};
@@ -283,9 +290,9 @@ class Controller {
     updateRotation();
   }
   void mapRequests() {
-    const float roll=std::copysign(std::fmax(0.0f,std::fabs(rotation[0])-5),rotation[0]);
-    const float pitch=-std::copysign(std::fmax(0.0f,std::fabs(rotation[1])-5),rotation[1]);
-    qReq[0]=clamp(roll,low[0],high[0]);qReq[1]=clamp(45+pitch,low[1],high[1]);qReq[2]=clamp(45+pitch,low[2],high[2]);
+    const float roll=jointSigns[0]*std::copysign(std::fmax(0.0f,std::fabs(rotation[0])-deadzone),rotation[0]);
+    const float pitch=jointSigns[1]*std::copysign(std::fmax(0.0f,std::fabs(rotation[1])-deadzone),rotation[1]);
+    qReq[0]=clamp(startup[0]+roll,low[0],high[0]);qReq[1]=clamp(startup[1]+pitch,low[1],high[1]);qReq[2]=clamp(startup[2]+pitch,low[2],high[2]);
   }
   static void slew(float &current,float requested,float &v,float low,float high,float speed,float accel,float dt) {
     const float error=requested-current;

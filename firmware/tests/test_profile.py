@@ -76,7 +76,10 @@ class TrialProfileTests(unittest.TestCase):
         header, identity = generator.generate(profile)
         self.assertIn("{1630,1030}", header)
         self.assertIn("{1570,1050}", header)
-        self.assertIn("{-3,42,42}", header)
+        self.assertIn("{-45,20,20}", header)
+        self.assertIn("{45,60,60}", header)
+        self.assertIn('{-1,-1}, "coordinated-angle-v4"', header)
+        self.assertIn("{-15,-10,-5,0,5,10,15}", header)
         self.assertIn("sha256:", identity)
         self.assertEqual(header, (ROOT / "firmware/robot/PoweredTrialProfile.h").read_text(encoding="ascii"))
         self.assertEqual(profile["shoulder_mapping"][0][0], 0)
@@ -89,7 +92,17 @@ class TrialProfileTests(unittest.TestCase):
 
     def test_widening_and_renewable_deadline_refused(self):
         for key, value in (("operating_limits_deg", [[-45,45],[0,60],[0,60]]),
-                           ("speed_deg_s", 20), ("gripper_limit_ms", 700),
+                           ("operating_limits_deg", [[-20,20],[35,55],[35,55]]),
+                           ("operating_limits_deg", [[-15,15],[35,55],[35,55]]),
+                           ("operating_limits_deg", [[-3,3],[42,48],[42,48]]),
+                           ("diagnostic_offsets_deg", [[-20,0,20],[-10,0,10],[-10,0,10]]),
+                           ("diagnostic_offsets_deg", [[-15,0,1.5,15],[-10,0,10],[-10,0,10]]),
+                           ("deadzone_deg", 0),
+                           ("joint_signs", [1,-1]), ("joint_signs", [-1,1]),
+                           ("joint_signs", [-1.0,-1]), ("mapping_version", "coordinated-angle-v3"),
+                           ("speed_deg_s", 2), ("speed_deg_s", 10), ("speed_deg_s", 20),
+                           ("acceleration_deg_s2", 5), ("acceleration_deg_s2", 60),
+                           ("gripper_limit_ms", 700),
                            ("shoulder_mapping", [[45,1030],[60,830]]),
                            ("onsite_confirmation_required", False)):
             p = self.trial();p[key] = value

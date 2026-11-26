@@ -3,9 +3,9 @@ import { test } from 'node:test'
 import { fallbackGeometry, referencePose, tipPosition, poseAt } from '../src/geometry.ts'
 import { nextAccelerationWarning, sceneResizeAction } from '../src/displayStability.ts'
 import { buttonTelemetryFresh, coordinatedFollowLabel } from '../src/controlPresentation.ts'
-import { validFrame, validModelConfig } from '../src/telemetry.ts'
+import { diagnosticOffsets, poweredConfigMatches, validFrame, validModelConfig } from '../src/telemetry.ts'
 import { ManagementLease } from '../src/management.ts'
-import { poweredBinding, outputStageLabel, canViewHistory } from '../src/powered.ts'
+import { poweredBinding, directObservationRequest, outputStageLabel, canViewHistory, recordedLimits, recordedMapping, modelMapping, mappingSignsLabel, rightTiltLabel } from '../src/powered.ts'
 
 test('upright assembly reference reaches 360mm without forward displacement', () => {
   const p = tipPosition({ ...referencePose, shoulder_down_deg: 0, elbow_down_deg: 0 }, fallbackGeometry)
@@ -196,8 +196,13 @@ test('disconnected telemetry uses explicit null diagnostics and no fabricated re
 const poweredFrame = () => {
   const value = liveFrame()
   value.input.kind = 'esp_now'
-  value.executor = { kind: 'robot_powered', connected: true, output_locked: false, boot_id: 'robot-boot', protocol_version: 3, profile_hash: 'trial-hash' }
-  value.output = { profile_hash: 'trial-hash', stage: 'holding', pwm_ticks: [330, 211, 215, 232], last_write_ms: 100, write_errors: 0, pwm_enabled: true, committed: true, trial_limits_deg: [[-3, 3], [42, 48], [42, 48]], max_velocity_deg_s: 2, max_acceleration_deg_s2: 5, power_confirmed: true, prepared: true, diagnostic_active: false }
+  value.executor = { kind: 'robot_powered', connected: true, output_locked: false, boot_id: 'robot-boot', protocol_version: 3, profile_hash: 'sha256:' + 'a'.repeat(64) }
+  value.output = { profile_hash: 'sha256:' + 'a'.repeat(64), stage: 'holding', pwm_ticks: [330, 211, 215, 232], last_write_ms: 100, write_errors: 0, pwm_enabled: true, committed: true, trial_limits_deg: [[-45, 45], [20, 60], [20, 60]], max_velocity_deg_s: 15, max_acceleration_deg_s2: 30, power_confirmed: true, prepared: true, diagnostic_active: false }
+  value.config_id = value.output.profile_hash
+  value.control.follow.deadzone_deg = 5
+  value.control.follow.version = 'coordinated-angle-v4'
+  value.control.follow.joint_signs = [-1, -1]
+  value.control.observation_ready = false
   return value
 }
 test('powered telemetry keeps PWM holding distinct from locks and physical feedback', () => {
@@ -205,12 +210,12 @@ test('powered telemetry keeps PWM holding distinct from locks and physical feedb
   for (const change of [
     (f) => { f.executor.output_locked = true },
     (f) => { f.executor.protocol_version = 2 },
+    (f) => { delete f.control.observation_ready },
+    (f) => { f.control.direct_observation = { note: '观察', unaccepted_axes: null } },
     (f) => { f.executor.profile_hash = 'different' },
     (f) => { f.output.pwm_ticks[0] = 4096 },
     (f) => { f.output.stage = 'holding'; f.output.committed = false },
     (f) => { f.output.stage = 'unknown'; f.output.pwm_enabled = null }, // Unknown must not publish a current accepted output target.
-    (f) => { f.output.trial_limits_deg[0] = [-45, 45] },
-    (f) => { f.output.max_velocity_deg_s = 20 },
     (f) => { f.joint_state.measured = { ...referencePose } },
   ]) {
     const frame = poweredFrame(); change(frame)
@@ -247,8 +252,8 @@ test('powered telemetry keeps PWM holding distinct from locks and physical feedb
 })
 test('powered management binds current board and config without granting a lease', () => {
   const state = poweredFrame()
-  assert.deepEqual(poweredBinding(state, null), { boot_id: 'robot-boot', profile_hash: 'trial-hash' })
-  assert.deepEqual(poweredBinding(state, { manager_token: 'explicit' }), { boot_id: 'robot-boot', profile_hash: 'trial-hash', manager_token: 'explicit' })
+  assert.deepEqual(poweredBinding(state, null), { boot_id: 'robot-boot', profile_hash: 'sha256:' + 'a'.repeat(64) })
+  assert.deepEqual(poweredBinding(state, { manager_token: 'explicit' }), { boot_id: 'robot-boot', profile_hash: 'sha256:' + 'a'.repeat(64), manager_token: 'explicit' })
   state.executor.connected = false
   assert.throws(() => poweredBinding(state, null))
   assert.throws(() => poweredBinding(liveFrame(), null))
@@ -264,6 +269,140 @@ test('physical history viewer requires stop and disconnect, and labels never cla
   assert.match(outputStageLabel('holding'), /PWM 输出保持/)
   assert.match(outputStageLabel('unknown'), /未知/)
   assert.match(outputStageLabel('disabled'), /释放/)
+})
+const observationModel = () => ({
+  config: { deadzone_deg: 5, limits_deg: [[-45, 45], [20, 60], [20, 60]], max_velocity_deg_s: [15, 15, 15], max_acceleration_deg_s2: [30, 30, 30] },
+  config_id: 'sha256:' + 'a'.repeat(64), profile_hash: 'sha256:' + 'a'.repeat(64), mapping_version: 'coordinated-angle-v4', joint_signs: [-1, -1], baseline_id: 'baseline', geometry: fallbackGeometry,
+  mounting: { profile: 'hand_back_x_right_y_forearm_z_down', control_from_sensor: { Roll: '-Y', Pitch: '+X', Z: '+Z' }, joint_signs: [-1, -1] }, warning: null,
+  diagnostic_offsets_deg: [[-15, -10, -5, 0, 5, 10, 15], [-10, -5, 0, 5, 10], [-10, -5, 0, 5, 10]],
+  trial_profile: { deadzone_deg: 5, operating_limits_deg: [[-45, 45], [20, 60], [20, 60]], speed_deg_s: 15, acceleration_deg_s2: 30, joint_signs: [-1, -1], mapping_version: 'coordinated-angle-v4',
+    diagnostic_offsets_deg: [[-15, -10, -5, 0, 5, 10, 15], [-10, -5, 0, 5, 10], [-10, -5, 0, 5, 10]] },
+})
+test('powered control requires approved read-only API configuration and matching frame/hash', () => {
+  const model = observationModel(), frame = poweredFrame()
+  assert.equal(validModelConfig(model), true)
+  assert.equal(poweredConfigMatches(frame, model), true)
+  assert.equal(poweredConfigMatches(frame, null), false)
+  for (const change of [
+    (f) => { f.output.trial_limits_deg[0] = [-50, 50] },
+    (f) => { f.output.trial_limits_deg[1] = [30, 60] },
+    (f) => { f.output.max_velocity_deg_s = 20 },
+    (f) => { f.output.max_acceleration_deg_s2 = 60 },
+    (f) => { f.control.follow.deadzone_deg = 4 },
+    (f) => { f.control.follow.version = 'coordinated-angle-v3' },
+    (f) => { f.control.follow.joint_signs = [1, -1] },
+    (f) => { f.executor.profile_hash = 'sha256:' + 'b'.repeat(64); f.output.profile_hash = f.executor.profile_hash },
+    (f) => { f.config_id = 'another-config' },
+  ]) {
+    const value = poweredFrame(); change(value)
+    assert.equal(poweredConfigMatches(value, model), false)
+  }
+  const widened = observationModel()
+  widened.config.limits_deg[0] = widened.trial_profile.operating_limits_deg[0] = [-50, 50]
+  assert.equal(validModelConfig(widened), false)
+  assert.equal(poweredConfigMatches(frame, widened), false)
+  const previous = observationModel()
+  previous.config.limits_deg = previous.trial_profile.operating_limits_deg = [[-3, 3], [42, 48], [42, 48]]
+  assert.equal(validModelConfig(previous), false) // Live profile was superseded; history stays viewable.
+  const slower = observationModel()
+  slower.config.max_velocity_deg_s = [10, 10, 10]; slower.config.max_acceleration_deg_s2 = [30, 30, 30]
+  slower.trial_profile.speed_deg_s = 10; slower.trial_profile.acceleration_deg_s2 = 30
+  assert.equal(validModelConfig(slower), false)
+  const wrongSign = observationModel(); wrongSign.mounting.joint_signs = [1, -1]
+  assert.equal(validModelConfig(wrongSign), false)
+  const wrongVersion = observationModel(); wrongVersion.trial_profile.mapping_version = 'coordinated-angle-v3'
+  assert.equal(validModelConfig(wrongVersion), false)
+})
+test('live virtual and no-power keep V3 while powered requires V4 reversed-base mapping', () => {
+  const virtual = liveFrame()
+  assert.equal(validFrame(virtual), true)
+  virtual.control.follow.version = 'coordinated-angle-v4'
+  assert.equal(validFrame(virtual), false)
+  const noPower = liveFrame(); noPower.executor.kind = 'robot_no_power'; noPower.input.kind = 'esp_now'
+  assert.equal(validFrame(noPower), true)
+  noPower.control.follow.joint_signs = [-1, -1]
+  assert.equal(validFrame(noPower), false)
+  const powered = poweredFrame()
+  assert.equal(validFrame(powered), true)
+  powered.control.follow.version = 'coordinated-angle-v3'
+  assert.equal(validFrame(powered), false)
+})
+test('direction labels follow current mode and saved history preserves its own mapping', () => {
+  const physical = modelMapping(observationModel(), true)
+  assert.deepEqual(physical, { signs: [-1, -1], version: 'coordinated-angle-v4' })
+  assert.match(rightTiltLabel(physical.signs), /逆时针/)
+  assert.equal(mappingSignsLabel(physical.signs), '底座 −1 / 双臂 −1')
+  const old = { controller_version: 'coordinated-angle-v3', mounting: { joint_signs: [1, -1] }, config: { limits_deg: [[-20, 20], [35, 55], [35, 55]] } }
+  const original = JSON.stringify(old)
+  assert.deepEqual(recordedMapping(old), { signs: [1, -1], version: 'coordinated-angle-v3' })
+  assert.match(rightTiltLabel(recordedMapping(old).signs), /顺时针/)
+  assert.deepEqual(recordedLimits(old), [[-20, 20], [35, 55], [35, 55]])
+  const current = { controller_version: 'coordinated-angle-v4', joint_signs: [-1, -1], mounting: { joint_signs: [-1, -1] } }
+  assert.deepEqual(recordedMapping(current), physical)
+  assert.equal(JSON.stringify(old), original)
+  assert.deepEqual(recordedMapping({}), { signs: null, version: null })
+  assert.deepEqual(modelMapping(observationModel(), false), { signs: null, version: null }) // Stale config from another mode.
+  assert.match(mappingSignsLabel(null), /未记录|未核对/)
+})
+test('direct observation is explicit, stays paused, and never creates axis acceptance', () => {
+  const state = poweredFrame()
+  state.control.observation_ready = true
+  state.control.can_enable = false // Only the normal axis-acceptance gate may be bypassed.
+  state.executor.acceptance = []
+  const request = directObservationRequest(state, { manager_token: 'current-manager' })
+  assert.equal(request.direct_observation, true)
+  assert.equal(request.boot_id, state.executor.boot_id)
+  assert.equal(request.profile_hash, state.executor.profile_hash)
+  assert.equal(request.manager_token, 'current-manager')
+  assert.match(request.note, /省略剩余逐轴诊断/)
+  assert.ok(request.note.length > 0 && request.note.length <= 500)
+  assert.equal('passed' in request, false)
+  assert.equal('armed' in request, false)
+  assert.equal(state.control.enabled, false)
+  assert.equal(state.control.armed, false)
+  assert.deepEqual(state.executor.acceptance, [])
+})
+test('direct observation preserves all other local initialization blockers', () => {
+  for (const change of [
+    (f) => { f.control.observation_ready = false },
+    (f) => { f.control.enabled = true },
+    (f) => { f.control.armed = true },
+    (f) => { f.executor.kind = 'virtual' },
+    (f) => { f.executor.connected = false },
+    (f) => { f.output.prepared = false },
+    (f) => { f.output.committed = false },
+    (f) => { f.output.diagnostic_active = true },
+    (f) => { f.control.fault = 'PCA_OUTPUT_UNKNOWN' },
+    (f) => { f.output.stage = 'unknown' },
+    (f) => { f.output.pwm_enabled = false },
+    (f) => { f.input.status = 'stale' },
+    (f) => { f.imu.valid = false },
+    (f) => { f.recording.active = true },
+    (f) => { f.replay.active = true },
+  ]) {
+    const state = poweredFrame(); state.control.observation_ready = true; change(state)
+    assert.throws(() => directObservationRequest(state, { manager_token: 'current' }))
+  }
+  const state = poweredFrame(); state.control.observation_ready = true
+  assert.throws(() => directObservationRequest(state, null))
+})
+test('diagnostic steps use unchanged per-axis subsets and exclude extra range steps', () => {
+  const model = observationModel()
+  assert.deepEqual(diagnosticOffsets(model, 'base'), [-15, -10, -5, 0, 5, 10, 15])
+  assert.equal(diagnosticOffsets(model, 'base').includes(20), false)
+  assert.equal(diagnosticOffsets(model, 'base').includes(45), false)
+  assert.deepEqual(diagnosticOffsets(model, 'shoulder'), [-10, -5, 0, 5, 10])
+  assert.equal(diagnosticOffsets(model, 'elbow').includes(15), false)
+  assert.deepEqual(diagnosticOffsets(null, 'base'), [])
+  assert.deepEqual(diagnosticOffsets(model, 'unknown'), [])
+})
+test('old and expanded schema5 history retains its own range and stored target semantics', () => {
+  const old = { schema_version: 5, config: { limits_deg: [[-3, 3], [42, 48], [42, 48]] } }
+  const current = { schema_version: 5, config: observationModel().config }
+  assert.deepEqual(recordedLimits(old), [[-3, 3], [42, 48], [42, 48]])
+  assert.deepEqual(recordedLimits(current), [[-45, 45], [20, 60], [20, 60]])
+  assert.equal(recordedLimits({ config: { limits_deg: [[-3, 3]] } }), null)
+  assert.deepEqual(old.config.limits_deg, [[-3, 3], [42, 48], [42, 48]])
 })
 test('current config rejects removed mounting/sign/neutral fields at the live boundary', () => {
   const model = {

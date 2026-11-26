@@ -119,7 +119,8 @@ class SnapshotAssembler:
             raise ValueError("robot identity/protocol/output lock mismatch")
         if powered:
             o = parts.get("output", {})
-            if (not profile_hash_valid(o.get("profile_hash")) or o.get("stage") not in ("locked", "holding", "unknown", "disabled")
+            settings, expected_hash = trial_profile()
+            if (o.get("profile_hash") != expected_hash or o.get("stage") not in ("locked", "holding", "unknown", "disabled")
                     or any(type(o.get(k)) is not bool for k in ("committed", "power_confirmed", "prepared", "diagnostic_active"))
                     or not (o.get("pwm_enabled") is None if o.get("stage") == "unknown" else type(o.get("pwm_enabled")) is bool)
                     or not integer(o.get("write_errors"))
@@ -128,8 +129,9 @@ class SnapshotAssembler:
             ticks = o.get("pwm_ticks")
             if ticks is not None and (not isinstance(ticks, list) or len(ticks) != 4 or not all(integer(v) and v <= 4095 for v in ticks)):
                 raise ValueError("powered PWM ticks")
-            if (o.get("trial_limits_deg") != [[-3, 3], [42, 48], [42, 48]]
-                    or o.get("max_velocity_deg_s") != 2 or o.get("max_acceleration_deg_s2") != 5
+            if (o.get("trial_limits_deg") != settings["operating_limits_deg"]
+                    or o.get("max_velocity_deg_s") != settings["speed_deg_s"]
+                    or o.get("max_acceleration_deg_s2") != settings["acceleration_deg_s2"]
                     or type(h.get("output_locked")) is not bool
                     or o["pwm_enabled"] and h["output_locked"]
                     or o["stage"] == "holding" and (not o["pwm_enabled"] or not o["committed"])):
@@ -156,6 +158,10 @@ class SnapshotAssembler:
             raise ValueError("initialized robot has no reference")
         if not all(pose_valid(t.get(k)) for k in ("requested", "output_target")) or t.get("measured") is not None:
             raise ValueError("robot software targets")
+        if powered and any(not low <= t[kind][key] <= high
+                           for kind in ("requested", "output_target")
+                           for key, (low, high) in zip(POSE_KEYS[:3], settings["operating_limits_deg"])):
+            raise ValueError("powered software target outside current trial range")
         if (not isinstance(t.get("velocity_deg_s"), list) or len(t["velocity_deg_s"]) != 3
                 or not all(finite_number(v) for v in t["velocity_deg_s"]) or not isinstance(t.get("limits"), list)
                 or len(t["limits"]) != 3 or not all(type(v) is bool for v in t["limits"])):

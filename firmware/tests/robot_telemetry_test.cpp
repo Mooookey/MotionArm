@@ -33,6 +33,7 @@ int main() {
   }
   assert(batch.valid);assert(batch.length*5+1000<11520);
   robot::PoweredOutput out(kPoweredTrialProfile);out.prepared=out.committed=out.powerConfirmed=true;
+  c.configureTrial(kPoweredTrialProfile);
   out.stage=robot::PoweredOutput::Stage::Holding;out.lastWriteMs=out.writeErrors=UINT32_MAX;
   for(auto &v:out.ticks)v=4095;
   robot::TelemetryBatch powered;
@@ -40,6 +41,9 @@ int main() {
     UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,&out);
   std::cerr<<"Powered worst snapshot bytes="<<powered.length<<" valid="<<powered.valid<<"\n";
   assert(powered.valid);assert(powered.length*5+2000<23040);
+  assert(std::strstr(powered.data,"\"trial_limits_deg\":[[-45,45],[20,60],[20,60]]"));
+  assert(std::strstr(powered.data,"\"max_velocity_deg_s\":15,\"max_acceleration_deg_s2\":30"));
+  assert(!std::strstr(powered.data,"[[-3,3],[42,48],[42,48]]"));
   for(const char *start=powered.data;*start;) {
     const char *end=std::strchr(start,'\n');assert(end);assert(end-start+1<=512);start=end+1;
   }

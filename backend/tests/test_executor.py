@@ -309,12 +309,31 @@ class ExecutorApiTests(unittest.TestCase):
         second = robot_parts(2, enabled=True)
         second['targets']['output_target']['base_yaw_deg'] = 20
         self.on_server(lambda: self.runtime.robot_receive({'type': 'snapshot', 'parts': second}))
-        self.assertEqual(self.runtime.records.frames, 1)
+        self.assertEqual(self.runtime.records.frames, 2)
         saved = self.client.post('/api/recordings/stop').json()
         self.assertEqual(saved['status'], 'completed')
         detail = self.client.get('/api/recordings/' + identifier).json()
         self.assertEqual(detail['frame_count'], 2)
         self.assertEqual(detail['frames'][-1]['output_target']['base_yaw_deg'], 20)
+
+    def test_complete_snapshots_are_saved_before_later_callbacks_replace_latest_cache(self):
+        identifier = self.begin_robot_record()
+        def deliver_back_to_back():
+            second = robot_parts(2, enabled=True)
+            third = robot_parts(3, enabled=True)
+            second['targets']['output_target']['base_yaw_deg'] = 17
+            third['targets']['output_target']['base_yaw_deg'] = 23
+            self.runtime.robot_receive({'type': 'snapshot', 'parts': second})
+            self.runtime.robot_receive({'type': 'snapshot', 'parts': third})
+        self.on_server(deliver_back_to_back)
+        self.assertEqual(self.runtime.records.frames, 3)
+        self.on_server(self.runtime.step)
+        self.assertEqual(self.runtime.records.frames, 3)
+        saved = self.client.post('/api/recordings/stop').json()
+        self.assertEqual(saved['status'], 'completed')
+        detail = self.client.get('/api/recordings/' + identifier).json()
+        self.assertEqual([f['t_ms'] for f in detail['frames']], [0, 200, 400])
+        self.assertEqual([f['output_target']['base_yaw_deg'] for f in detail['frames']], [11, 17, 23])
 
     def test_no_power_record_replays_saved_targets_only_after_explicit_virtual_selection(self):
         identifier = self.begin_robot_record()

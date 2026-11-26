@@ -74,19 +74,16 @@ class Recordings:
             return
         meta = self.get(self.active)
         if meta["boot_id"] != boot_id or meta["calibration_id"] != calibration_id:
-            self.finish("interrupted", "device or calibration changed")
-            return
+            return self.finish("interrupted", "device or calibration changed")
         if self.last_seq == sample["seq"]:
             return
         if self.last_time is not None and not 0 < t_ms - self.last_time <= 250:
-            self.finish("interrupted", "nonmonotonic robot time or telemetry gap")
-            return
+            return self.finish("interrupted", "nonmonotonic robot time or telemetry gap")
         if self.first_time is None:
             self.first_time = t_ms
         duration = t_ms - self.first_time
         if duration > 600_000:
-            self.finish("interrupted", "recording time limit")
-            return
+            return self.finish("interrupted", "recording time limit")
         payload = {**sample, "t_ms": duration,
                    "robot_t_ms": None if sample.get("clock_domain") == "backend_monotonic" else t_ms}
         with self.db:

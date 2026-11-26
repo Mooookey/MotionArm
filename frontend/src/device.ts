@@ -2,7 +2,7 @@ import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { request } from './api'
 import type { ModelConfig, Point, Telemetry } from './types'
-import { validFrame, validModelConfig } from './telemetry'
+import { poweredConfigMatches, validFrame, validModelConfig } from './telemetry'
 import { ManagementLease } from './management'
 export { isPose } from './telemetry'
 
@@ -27,7 +27,8 @@ export const useDevice = defineStore('device', () => {
     configRequest = request<ModelConfig>('/api/executor/config').then((value) => {
       if (!validModelConfig(value)) throw new Error('后端仿真配置格式不兼容，请同步更新服务。')
       model.value = value
-      retryConfigAt = 0
+      retryConfigAt = performance.now() + 3000
+      if (snapshot.value) incompatible.value = poweredConfigMatches(snapshot.value, value) ? '' : '执行端配置尚未匹配：实时控制保持锁定。'
     }).catch((error) => {
       retryConfigAt = performance.now() + 3000
       throw error
@@ -45,17 +46,18 @@ export const useDevice = defineStore('device', () => {
       }
       return
     }
-    incompatible.value = ''
+    const matched = poweredConfigMatches(value, model.value)
+    incompatible.value = matched ? '' : '执行端配置尚未匹配：请核对只读配置及哈希，实时控制保持锁定。'
     if (snapshot.value && (snapshot.value.executor.kind !== value.executor.kind ||
         snapshot.value.executor.boot_id !== value.executor.boot_id || snapshot.value.executor.profile_hash !== value.executor.profile_hash)) management.clear()
     if (snapshot.value && snapshot.value.executor.kind !== value.executor.kind) points.value = []
     snapshot.value = value
-    management.observe(value.executor.kind !== 'robot_powered' || value.executor.connected,
+    management.observe(matched && (value.executor.kind !== 'robot_powered' || value.executor.connected),
       value.executor.kind === 'robot_powered' ? value.health?.manager_active === true : value.control.enabled)
     connection.value = 'connected'
     seenAt = performance.now()
     attempts = 0
-    if ((!model.value || (value.config_id && value.config_id !== model.value.config_id)) && performance.now() >= retryConfigAt) {
+    if ((!matched || !model.value || (value.config_id && value.config_id !== model.value.config_id)) && performance.now() >= retryConfigAt) {
       void loadConfig().catch(() => {})
     }
     if (value.server_time_ms - lastPoint >= 95) {
@@ -109,7 +111,10 @@ export const useDevice = defineStore('device', () => {
     clearInterval(heartbeatTimer)
     socket?.close()
   }
-  function grantManagement(token: string) { management.grant(token) }
+  function grantManagement(token: string) {
+    if (fresh.value && snapshot.value && poweredConfigMatches(snapshot.value, model.value)) management.grant(token)
+    else management.clear()
+  }
   function releaseManagement() { management.clear() }
   function managementPayload() { return management.payload() }
   return { snapshot, model, connection, incompatible, fresh, realReady, points, start, stop, loadConfig, grantManagement, releaseManagement, managementPayload }

@@ -85,11 +85,14 @@ struct TelemetryBatch {
       if(output->committed || output->stage==PoweredOutput::Stage::Disabled)snprintf(written,sizeof(written),"%lu",(unsigned long)output->lastWriteMs);
       else snprintf(written,sizeof(written),"null");
       append("output", "\"profile_hash\":\"%s\",\"stage\":\"%s\",\"pwm_ticks\":%s,\"last_write_ms\":%s,\"write_errors\":%lu,"
-        "\"pwm_enabled\":%s,\"committed\":%s,\"trial_limits_deg\":[[-3,3],[42,48],[42,48]],"
-        "\"max_velocity_deg_s\":2,\"max_acceleration_deg_s2\":5,\"power_confirmed\":%s,\"prepared\":%s,\"diagnostic_active\":%s",
+        "\"pwm_enabled\":%s,\"committed\":%s,\"trial_limits_deg\":[[%.0f,%.0f],[%.0f,%.0f],[%.0f,%.0f]],"
+        "\"max_velocity_deg_s\":%.0f,\"max_acceleration_deg_s2\":%.0f,\"power_confirmed\":%s,\"prepared\":%s,\"diagnostic_active\":%s",
         output->profile.hash,output->stageName(),pwm,written,(unsigned long)output->writeErrors,
         output->stage==PoweredOutput::Stage::Unknown?"null":jsonBool(output->enabled()),
-        jsonBool(output->committed),jsonBool(output->powerConfirmed),
+        jsonBool(output->committed),
+        output->profile.low[0],output->profile.high[0],output->profile.low[1],output->profile.high[1],
+        output->profile.low[2],output->profile.high[2],output->profile.speed,output->profile.acceleration,
+        jsonBool(output->powerConfirmed),
         jsonBool(output->prepared),jsonBool(c.diagnosticActive));
     }
   }

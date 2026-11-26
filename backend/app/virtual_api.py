@@ -101,6 +101,7 @@ class VirtualRuntime:
         self.manager_socket = None
         self.robot_managed_enabled = False
         self.initializations = {}
+        self.direct_observation = None
         self.power_actions = {}
         self.acceptance = []
         self.trial_config, self.trial_hash = trial_profile()
@@ -121,6 +122,14 @@ class VirtualRuntime:
         if self.powered:
             return (self.robot_hello or {}).get("profile_hash", "robot_powered:unknown")
         return "robot_no_power:" + MAPPING_VERSION
+
+    @property
+    def executor_mapping_version(self):
+        return self.trial_config["mapping_version"] if self.powered else MAPPING_VERSION
+
+    @property
+    def executor_joint_signs(self):
+        return deepcopy(self.trial_config["joint_signs"] if self.powered else MOUNTING["joint_signs"])
 
     def save_config(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +214,7 @@ class VirtualRuntime:
         self.robot_managed_enabled = False
         self.manager_observed = False
         self.initializations.clear()
+        self.direct_observation = None
         self.power_actions.clear()
         if self.robot_link:
             self.robot_link.disarm()
@@ -288,6 +298,10 @@ class VirtualRuntime:
             if not self.robot_input_valid():
                 self.clear_manager()
                 self.interrupt_record("无线输入无效或过期")
+            if self.physical and self.records.active:
+                # Admit each complete, validated snapshot before a later
+                # callback can replace the public latest-state cache.
+                self.append_robot_sample(self.clock())
         elif kind == "event":
             if not self.robot_hello or message["boot_id"] != self.robot_hello["boot_id"]:
                 return
@@ -413,8 +427,9 @@ class VirtualRuntime:
             payload["supported"] = True
         elif action == "test_joint":
             axis, delta = body.get("axis"), body.get("offset_deg")
-            if not isinstance(axis, int) or isinstance(axis, bool) or axis not in (0, 1, 2) or not finite_number(delta) or not -3 <= delta <= 3:
-                raise ValueError("单轴检查仅允许轴0/1/2、相对启动姿态±3°")
+            if (not isinstance(axis, int) or isinstance(axis, bool) or axis not in (0, 1, 2)
+                    or not finite_number(delta) or delta not in self.trial_config["diagnostic_offsets_deg"][axis]):
+                raise ValueError("单轴检查仅允许当前配置列出的离散偏移，不能以跟随边界代替诊断步长")
             payload.update(axis=axis, offset_deg=delta)
         generation = self.manager_generation
         try:
@@ -463,13 +478,21 @@ class VirtualRuntime:
         self.flush_events()
         return {"ok": True, "acceptance": deepcopy(self.acceptance)}
 
-    async def initialize(self, request_id=None):
+    async def initialize(self, request_id=None, direct_observation=False, note=""):
         if request_id is None:
             request_id = uuid4().hex
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 64:
             raise ValueError("初始化 request_id 应为 1–64 字符")
+        if type(direct_observation) is not bool or not isinstance(note, str) or len(note) > 500:
+            raise ValueError("直接观察标记须为布尔值，说明须为500字符以内文本")
+        if direct_observation and (not self.powered or not note.strip()):
+            raise ValueError("直接观察仅用于当前实体有动力执行端，并须明确填写本次观察说明")
+        parameters = (direct_observation, note)
         if request_id in self.initializations:
-            return self.initializations[request_id]
+            previous, result = self.initializations[request_id]
+            if parameters != previous:
+                raise ValueError("同一初始化request_id不可用于不同直接观察参数或说明")
+            return result
         if self.executor_kind == "virtual":
             blockers = self.enable_blockers()
             if blockers:
@@ -477,13 +500,14 @@ class VirtualRuntime:
             self.controller.enable()
         else:
             state = self.robot_snapshot()
-            if self.records.active or self.replay["active"] or not state["control"]["can_enable"] or not self.robot_link:
+            ready = state["control"].get("observation_ready") if direct_observation else state["control"]["can_enable"]
+            if self.records.active or self.replay["active"] or not ready or not self.robot_link:
                 raise ValueError("执行端不满足初始化条件")
             payload = {"request_id": request_id}
             if self.powered:
                 if not self.manager_token or not self.robot_parts["output"]["prepared"]:
                     raise ValueError("请先准备当前有动力执行端管理会话")
-                if not all(any(a["axis"] == axis and a["passed"] for a in self.acceptance) for axis in ("base", "shoulder", "elbow")):
+                if not direct_observation and not all(any(a["axis"] == axis and a["passed"] for a in self.acceptance) for axis in ("base", "shoulder", "elbow")):
                     raise ValueError("须先逐轴完成小范围检查并记录现场通过")
                 payload.update(boot_id=self.robot_hello["boot_id"], profile_hash=self.robot_hello["profile_hash"])
             try:
@@ -496,9 +520,19 @@ class VirtualRuntime:
                 raise ValueError("初始化期间管理状态已停止或失效，迟到ACK不能恢复控制权")
             if answer["type"] != "ack":
                 raise ValueError(answer.get("error") or answer.get("error_code") or "执行端拒绝初始化")
+            if direct_observation:
+                self.direct_observation = {"code": "OPERATOR_DIRECT_OBSERVATION", "origin": "operator",
+                    "message": note.strip(), "note": note.strip(), "request_id": request_id,
+                    "boot_id": self.robot_hello["boot_id"], "profile_hash": self.robot_hello["profile_hash"],
+                    "time_ms": int(time.time()*1000), "robot_device_ms": self.robot_clock_raw,
+                    "event_seq": "direct-" + uuid4().hex, "management_generation": self.manager_generation,
+                    "unaccepted_axes": [axis for axis in ("base", "shoulder", "elbow")
+                                        if not any(a["axis"] == axis and a["passed"] for a in self.acceptance)]}
+                self.robot_events = (self.robot_events + [deepcopy(self.direct_observation)])[-60:]
+                self.flush_events()
         self.tokens.clear()
         result = {"ok": True, "manager_token": self.manager_token if self.powered else self.start_manager(), **self.config_snapshot()}
-        self.initializations[request_id] = result
+        self.initializations[request_id] = (parameters, result)
         return result
 
     async def stop_control(self, reason="软件停止"):
@@ -596,18 +630,31 @@ class VirtualRuntime:
         physical = self.physical
         config = deepcopy(DEFAULT_CONFIG if physical else self.controller.config)
         if self.powered:
-            config.update(limits_deg=[[-3., 3.], [42., 48.], [42., 48.]], max_velocity_deg_s=[2., 2., 2.], max_acceleration_deg_s2=[5., 5., 5.])
+            config.update(deadzone_deg=self.trial_config["deadzone_deg"],
+                          limits_deg=deepcopy(self.trial_config["operating_limits_deg"]),
+                          max_velocity_deg_s=[self.trial_config["speed_deg_s"]]*3,
+                          max_acceleration_deg_s2=[self.trial_config["acceleration_deg_s2"]]*3)
+        mounting = deepcopy(MOUNTING)
+        mounting["joint_signs"] = self.executor_joint_signs
         return {"config": config,
-                "config_id": self.robot_config_id if physical else self.controller.config_id,
-                "mounting": deepcopy(MOUNTING),
+                "config_id": self.trial_hash if self.powered else self.robot_config_id if physical else self.controller.config_id,
+                "mounting": mounting,
+                "joint_signs": self.executor_joint_signs, "mapping_version": self.executor_mapping_version,
                 "geometry": deepcopy(self.geometry), "baseline_id": self.baseline["baseline_id"],
                 "warning": self.config_warning,
                 "trial_profile": deepcopy(self.trial_config) if self.powered else None,
+                "diagnostic_offsets_deg": deepcopy(self.trial_config["diagnostic_offsets_deg"]) if self.powered else None,
                 "profile_hash": self.trial_hash if self.powered else None}
+
+    def robot_pitch_limits(self):
+        limits = self.trial_config["operating_limits_deg"] if self.powered else DEFAULT_CONFIG["limits_deg"]
+        startup = self.trial_config["startup_deg"] if self.powered else [0, 45, 45]
+        return [max(limits[i][0] - startup[i] for i in (1, 2)),
+                min(limits[i][1] - startup[i] for i in (1, 2))]
 
     def metadata(self):
         result = {**self.config_snapshot(), "input": "imu_usb", "executor": "virtual",
-                "controller_version": MAPPING_VERSION, "mapping": "COORDINATED_RELATIVE_ANGLE",
+                "controller_version": self.executor_mapping_version, "mapping": "COORDINATED_RELATIVE_ANGLE",
                 "limit_policy": LIMIT_POLICY,
                 "button_semantics": "ac_toggle_follow_bc_toggle_gripper_v1", "pitch_weights": [1., 1.],
                 "attitude_representation": ATTITUDE_REPRESENTATION,
@@ -624,6 +671,7 @@ class VirtualRuntime:
                           wearable_mac=self.robot_parts["health"].get("wearable_mac"),
                           profile_hash=self.robot_hello.get("profile_hash"),
                           output=deepcopy(self.robot_parts.get("output")), acceptance=deepcopy(self.acceptance),
+                          direct_observation=deepcopy(self.direct_observation),
                           event_baseline={"event_seq": self.robot_last_event_seq,
                                           "ev_drop": self.robot_parts["health"].get("ev_drop", 0),
                                           "robot_device_ms": self.robot_clock_raw},
@@ -677,7 +725,7 @@ class VirtualRuntime:
                         "mapping": "COORDINATED_RELATIVE_ANGLE",
                         "limit_policy": LIMIT_POLICY,
                         "follow": c.mapping_state(),
-                        "can_enable": not enable_blockers,
+                        "can_enable": not enable_blockers, "observation_ready": False,
                         "reason": c.reason,
                         "gate_status": gate_status, "blockers": blockers,
                         "fault": None if valid else status},
@@ -743,9 +791,17 @@ class VirtualRuntime:
                             "ac": f.get("ac"), "bc": f.get("bc")}
         blockers = [] if connected and valid and control.get("can_enable") else [control.get("reason") or "等待完整执行端遥测与稳定无线输入"]
         can_enable = not blockers and not self.records.active and not self.replay["active"]
+        observation_ready = False
         if self.powered:
-            if not self.manager_token or not parts or not parts["output"].get("prepared"):
+            if (not self.manager_token or self.manager_at is None or self.clock() - self.manager_at >= .75
+                    or not parts or not parts["output"].get("prepared") or not parts["health"].get("manager_active")):
                 blockers.append("须明确准备当前管理会话")
+            if (not parts or parts["output"].get("stage") != "holding" or not parts["output"].get("pwm_enabled")
+                    or not parts["output"].get("committed") or parts["output"].get("diagnostic_active")
+                    or not parts["health"].get("pca_readable")
+                    or control.get("enabled") or control.get("armed") or control.get("fault")):
+                blockers.append("须保持PWM输出、停止推进、完成当前诊断且无故障")
+            observation_ready = bool(can_enable and not blockers)
             if not all(any(a["axis"] == axis and a["passed"] for a in self.acceptance) for axis in ("base", "shoulder", "elbow")):
                 blockers.append("须逐轴记录现场动作通过后初始化跟随")
             can_enable = can_enable and not blockers
@@ -757,12 +813,16 @@ class VirtualRuntime:
                             "source_stale": not connected, "management_active": bool(self.manager_token),
                             "owner": control.get("owner", "NONE"), "enabled": bool(control.get("enabled")),
                             "armed": bool(control.get("armed")), "can_enable": bool(can_enable),
+                            "observation_ready": observation_ready, "direct_observation": deepcopy(self.direct_observation),
                             "reason": control.get("reason") or self.robot_detail, "fault": control.get("fault") if connected else "EXECUTOR_OFFLINE",
                             "blockers": blockers, "gate_status": "INPUT_INVALID" if not valid else "ACTIVE" if control.get("armed") else "READY" if control.get("enabled") else "DISABLED",
                             "mapping": "COORDINATED_RELATIVE_ANGLE", "limit_policy": LIMIT_POLICY,
-                            "follow": {"version": MAPPING_VERSION, "reference_quaternion": control.get("reference_quaternion"),
-                                       "delta_rotation_vector_deg": vector, "deadzone_deg": 5., "limit_policy": LIMIT_POLICY,
-                                       "angle_ambiguous": bool(control.get("angle_ambiguous")), "pitch_weights": [1., 1.], "pitch_limits_deg": [-3., 3.] if self.powered else [-45., 15.]}}
+                            "follow": {"version": self.executor_mapping_version, "joint_signs": self.executor_joint_signs,
+                                       "reference_quaternion": control.get("reference_quaternion"),
+                                       "delta_rotation_vector_deg": vector,
+                                       "deadzone_deg": self.trial_config["deadzone_deg"] if self.powered else DEFAULT_CONFIG["deadzone_deg"], "limit_policy": LIMIT_POLICY,
+                                       "angle_ambiguous": bool(control.get("angle_ambiguous")), "pitch_weights": [1., 1.],
+                                       "pitch_limits_deg": self.robot_pitch_limits()}}
         state["joint_state"] = ({key: deepcopy(parts["targets"].get(key)) for key in ("requested", "output_target", "measured", "velocity_deg_s", "limits")}
                                 if parts else {"requested": None, "output_target": None, "measured": None, "velocity_deg_s": [0., 0., 0.], "limits": [False]*3})
         if self.powered and parts:
@@ -796,6 +856,9 @@ class VirtualRuntime:
             result = self.records.start(name, "wearable", self.robot_hello["boot_id"] + ":" + str(self.robot_parts["imu"]["wearable_boot"]),
                                         self.robot_config_id, self.executor_kind, "robot-usb-v3" if self.powered else "robot-usb-v2", metadata=self.metadata())
             self.append_robot_sample(self.clock())
+            if self.direct_observation:
+                self.records.note_event({**deepcopy(self.direct_observation), "t_ms": self.robot_clock_total,
+                    "clock_domain": "robot_monotonic_extended", "authorization_preceded_recording": True})
             return self.records.get(result["id"])
         if not c.enabled or c.owner != "WEARABLE" or not c.valid():
             error("录制需要已启用的真实 IMU 控制")
@@ -862,7 +925,7 @@ class VirtualRuntime:
             return
         state = self.robot_snapshot()
         self.record_seq += 1
-        self.records.append(self.robot_hello["boot_id"] + ":" + str(self.robot_parts["imu"]["wearable_boot"]),
+        finished = self.records.append(self.robot_hello["boot_id"] + ":" + str(self.robot_parts["imu"]["wearable_boot"]),
                             state["config_id"], self.robot_clock_total,
                             {"seq": self.record_seq, "requested": state["joint_state"]["requested"],
                              "output_target": state["joint_state"]["output_target"], "measured": None,
@@ -873,6 +936,8 @@ class VirtualRuntime:
                              "clock_domain": "robot_monotonic_extended", "pc_received_ns": self.robot_pc_received_ns,
                              "pc_elapsed_ms": round((now - self.started) * 1000),
                              "imu_seq": self.robot_parts["imu"]["wearable_seq"], "device_ms": self.robot_parts["imu"]["ms"]})
+        if finished:
+            self.last_recording = finished
         self.robot_record_snapshot = self.robot_parts["control"]["snapshot_id"]
 
     def step(self, now=None):
@@ -918,7 +983,7 @@ class VirtualRuntime:
             elif now >= self.next_sample:
                 self.record_seq += 1
                 state = self.snapshot()
-                self.records.append(str(c.frame["boot"]), c.config_id, round((now - self.started) * 1000), {
+                finished = self.records.append(str(c.frame["boot"]), c.config_id, round((now - self.started) * 1000), {
                     "seq": self.record_seq, "pc_received_ns": time.monotonic_ns(),
                     "requested": c.joint_state()["requested"], "output_target": c.joint_state()["output_target"],
                     "imu": state["imu"], "buttons": state["buttons"], "owner": c.owner,
@@ -926,6 +991,8 @@ class VirtualRuntime:
                     "gripper": state["gripper"], "executor": state["executor"], "measured": None,
                     "clock_domain": "backend_monotonic", "backend_t_ms": round((now - self.started) * 1000),
                 })
+                if finished:
+                    self.last_recording = finished
                 self.next_sample += .04
                 if self.next_sample <= now:
                     self.next_sample = now + .04
@@ -1104,7 +1171,7 @@ def create_virtual_app(db_path=None, config_path=None, executor_kind="virtual"):
         async with rt().lock:
             if rt().powered:
                 rt().powered_binding(body)
-            return await rt().initialize(body.get("request_id"))
+            return await rt().initialize(body.get("request_id"), body.get("direct_observation", False), body.get("note", ""))
 
     @app.post("/api/executor/prepare")
     async def prepare_executor(body: dict = Body(...)):

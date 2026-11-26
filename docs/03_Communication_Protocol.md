@@ -60,9 +60,13 @@ output包含profile_hash、stage（locked/holding/disabled/unknown）、pwm_tick
 
 - prepare检查逻辑健康与当前状态，建立受看门狗约束的管理准备。
 - enable_output需supported、power_confirmed、startup_aligned三个明确true，独立于初始化；提交0/45/45/open后暂停保持。未作现场确认时必须拒绝。
-- test_joint仅axis=0/1/2与相对启动位offset_deg在±3°内的单次受限轨迹，禁止运行中或已有诊断时插入连续目标。
+- test_joint仅axis=0/1/2的单次受限轨迹：底座相对启动位offset_deg仅0、±5、±10、±15；大小臂仅0、±5、±10。集合来自当前哈希绑定的trial配置，禁止运行中或已有诊断时插入连续目标。当前跟随限位为底座±45°、双臂20～60°；扩大跟随范围不扩大离散诊断白名单。
 - init由robot稳定采集参考，从已提交目标限速回启动位；不允许参考与目标跳变。
 - stop清参考、停止推进并开爪，承重轴保持最后成功目标；不设FULL_OFF。
 - disable_output需supported=true；正常结束先停止并到软件打开目标，再在托住后释放PWM。输出未知的人工处置不能被视为自动恢复许可。
 
 Web对应POST `/api/executor/prepare|enable-output|test-joint|disable-output|acceptance`。prepare建立页面管理令牌，后续运动管理绑定boot、profile_hash与当前manager_token。停止或会话失效后，disable-output仍可凭当前USB会话、boot、配置及supported=true明确释放PWM，不恢复控制权。ACK表示接纳，后续快照表示软件输出阶段，实物动作只由现场观察记录，均不等于编码器反馈。
+
+有动力`POST /api/executor/initialize`可显式携带`direct_observation:true`和非空`note`，仅在当前boot/配置/管理会话匹配、PWM保持、诊断结束、有效稳定输入且无录制/回放冲突时接纳。该路径省去人工逐轴验收门槛，仍下发相同robot init并保持暂停；普通初始化仍要求逐轴观察结果。`control.observation_ready`报告该路径当前是否可用。成功接纳后记录OPERATOR_DIRECT_OBSERVATION事件及metadata.direct_observation，列出未验收轴，不改acceptance的passed含义；停止/失效/会话变化撤销，不自动恢复。当前观察配置速度15°/s、加速度参数30°/s²，范围底座±45°、双臂20～60°。
+
+实体当前profile的mapping_version为`coordinated-angle-v4`、joint_signs为[-1,-1]，仅反转相对旧实体v3的底座方向。ESP-NOW v2四元数/坐标及USB v3字段布局不变，以profile_hash绑定实际控制配置；后端control.follow.version/joint_signs与配置、录制metadata反映该版本。virtual/no_power仍为v3、[+1,-1]；历史记录按保存目标及自身元数据查看，绝不以当前符号重解算旧IMU。

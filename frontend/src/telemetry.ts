@@ -34,8 +34,8 @@ export function validFrame(value: unknown): value is Telemetry {
     !(['locked', 'disabled'].includes(output.stage) && output.pwm_enabled !== false) &&
     (output.pwm_ticks === null || vector(output.pwm_ticks, 4) && output.pwm_ticks.every((n) => Number.isInteger(n) && n >= 0 && n < 4096)) &&
     optionalAge(output.last_write_ms) && finite(output.write_errors) && output.write_errors >= 0 &&
-    JSON.stringify(output.trial_limits_deg) === '[[-3,3],[42,48],[42,48]]' &&
-    output.max_velocity_deg_s === 2 && output.max_acceleration_deg_s2 === 5 &&
+    Array.isArray(output.trial_limits_deg) && output.trial_limits_deg.length === 3 && output.trial_limits_deg.every((row) => vector(row, 2) && row[0]! < row[1]!) &&
+    finite(output.max_velocity_deg_s) && output.max_velocity_deg_s > 0 && finite(output.max_acceleration_deg_s2) && output.max_acceleration_deg_s2 > 0 &&
     typeof output.power_confirmed === 'boolean' && typeof output.prepared === 'boolean' && typeof output.diagnostic_active === 'boolean')
   const robot = noPower || powered
   const nullablePose = (p: unknown) => isPose(p) || robot && p === null
@@ -60,8 +60,12 @@ export function validFrame(value: unknown): value is Telemetry {
     typeof t.buttons?.a === 'boolean' && typeof t.buttons.b === 'boolean' && counter(t.buttons.ac) && counter(t.buttons.bc) &&
     typeof t.control?.enabled === 'boolean' && typeof t.control.armed === 'boolean' &&
     typeof t.control.can_enable === 'boolean' && typeof t.control.gate_status === 'string' &&
+    (typeof t.control.observation_ready === 'boolean' || !powered && t.control.observation_ready === undefined) &&
+    (t.control.direct_observation == null || typeof t.control.direct_observation.note === 'string' &&
+      Array.isArray(t.control.direct_observation.unaccepted_axes) && t.control.direct_observation.unaccepted_axes.every((axis) => ['base', 'shoulder', 'elbow'].includes(axis))) &&
     Array.isArray(t.control.blockers) && t.control.blockers.every((item) => typeof item === 'string') &&
-    t.control.follow?.version === 'coordinated-angle-v3' && quaternion(t.control.follow.reference_quaternion) &&
+    t.control.follow?.version === (powered ? 'coordinated-angle-v4' : 'coordinated-angle-v3') && quaternion(t.control.follow.reference_quaternion) &&
+    (t.control.follow.joint_signs === undefined && !powered || same(t.control.follow.joint_signs, powered ? [-1, -1] : [1, -1])) &&
     nullableVector(t.control.follow.delta_rotation_vector_deg, 3) &&
     !!t.joint_state && nullablePose(t.joint_state.requested) && nullablePose(t.joint_state.output_target) && t.joint_state.measured === null &&
     (!powered || currentOutputAvailable || t.joint_state.output_target === null) &&
@@ -82,5 +86,43 @@ export function validModelConfig(value: unknown): value is ModelConfig {
     m.mounting?.profile === 'hand_back_x_right_y_forearm_z_down' &&
     m.mounting.control_from_sensor?.Roll === '-Y' && m.mounting.control_from_sensor.Pitch === '+X' &&
     m.mounting.control_from_sensor.Z === '+Z' && vector(m.mounting.joint_signs, 2) &&
-    m.mounting.joint_signs[0] === 1 && m.mounting.joint_signs[1] === -1
+    (m.profile_hash == null
+      ? same(m.mounting.joint_signs, [1, -1]) && (m.mapping_version === undefined || m.mapping_version === 'coordinated-angle-v3') && (m.joint_signs === undefined || same(m.joint_signs, [1, -1]))
+      : validPoweredModel(m))
+}
+
+const approvedLimits = [[-45, 45], [20, 60], [20, 60]]
+const approvedDiagnostics = [[-15, -10, -5, 0, 5, 10, 15], [-10, -5, 0, 5, 10], [-10, -5, 0, 5, 10]]
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
+/** Read-only API configuration is still bounded by this observation approval. */
+function validPoweredModel(m: ModelConfig): boolean {
+  const p = m.trial_profile
+  return typeof m.profile_hash === 'string' && /^sha256:[0-9a-f]{64}$/.test(m.profile_hash) &&
+    m.config_id === m.profile_hash && m.config.deadzone_deg === 5 &&
+    m.mapping_version === 'coordinated-angle-v4' && same(m.joint_signs, [-1, -1]) && same(m.mounting.joint_signs, [-1, -1]) &&
+    same(m.config.limits_deg, approvedLimits) && same(m.config.max_velocity_deg_s, [15, 15, 15]) &&
+    same(m.config.max_acceleration_deg_s2, [30, 30, 30]) && same(m.diagnostic_offsets_deg, approvedDiagnostics) &&
+    !!p && p.deadzone_deg === m.config.deadzone_deg && same(p.operating_limits_deg, m.config.limits_deg) &&
+    p.speed_deg_s === 15 && p.acceleration_deg_s2 === 30 && same(p.diagnostic_offsets_deg, m.diagnostic_offsets_deg) &&
+    p.mapping_version === m.mapping_version && same(p.joint_signs, m.joint_signs)
+}
+
+/** A structurally valid robot frame never grants control before API/hash matching. */
+export function poweredConfigMatches(t: Telemetry, model: ModelConfig | null): boolean {
+  if (t.executor.kind !== 'robot_powered') return true
+  const o = t.output ?? t.executor.output
+  if (!o) return !t.executor.connected
+  return !!model && validModelConfig(model) && validPoweredModel(model) &&
+    model.profile_hash === o.profile_hash && t.executor.profile_hash === model.profile_hash && t.config_id === model.config_id &&
+    same(o.trial_limits_deg, model.config.limits_deg) &&
+    model.config.max_velocity_deg_s.every((v) => v === o.max_velocity_deg_s) &&
+    model.config.max_acceleration_deg_s2.every((a) => a === o.max_acceleration_deg_s2) &&
+    t.control.follow.deadzone_deg === model.config.deadzone_deg && t.control.follow.version === model.mapping_version &&
+    same(t.control.follow.joint_signs, model.joint_signs)
+}
+
+export function diagnosticOffsets(model: ModelConfig | null, axis: string): number[] {
+  const index = ['base', 'shoulder', 'elbow'].indexOf(axis)
+  return index >= 0 && model?.profile_hash && validModelConfig(model) ? [...(model.diagnostic_offsets_deg?.[index] ?? [])] : []
 }

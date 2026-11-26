@@ -12,6 +12,17 @@ struct TrialProfile {
   float baseUs[3], shoulderUs[2], elbowUs[2];
   uint16_t openUs, closeUs;
   float tickUs;
+  float deadzone;
+  float diagnosticOffsets[3][7];
+  uint8_t diagnosticCounts[3];
+  int8_t jointSigns[2]; // Roll -> base, Pitch -> both arms; sensor coordinates unchanged.
+  const char *mappingVersion;
+  bool permitsDiagnostic(unsigned axis,float offset) const {
+    if(axis>=3 || !std::isfinite(offset))return false;
+    for(unsigned i=0;i<diagnosticCounts[axis] && i<7;++i)
+      if(offset==diagnosticOffsets[axis][i])return true;
+    return false;
+  }
 };
 struct OutputTransport {
   virtual bool writeTicks(const uint16_t *ticks) = 0; // order base, shoulder, elbow, gripper

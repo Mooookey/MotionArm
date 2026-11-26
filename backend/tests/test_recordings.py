@@ -44,12 +44,14 @@ class RecordingTests(unittest.TestCase):
         record = self.start()
         self.records.append("boot-a", "sim-a", 100, self.sample())
         self.records.append("boot-a", "sim-a", 140, self.sample(2))
-        self.records.append("boot-a", "sim-a", 500, self.sample(3))
+        finished = self.records.append("boot-a", "sim-a", 500, self.sample(3))
         saved = self.records.get(record["id"], detail=True)
         self.assertIsNone(self.records.active)
         self.assertEqual(saved["status"], "interrupted")
         self.assertEqual(len(saved["frames"]), 2)
         self.assertIn("gap", saved["note"])
+        self.assertEqual(finished["id"], record["id"])
+        self.assertEqual(finished["status"], "interrupted")
 
     def test_reboot_and_config_change_interrupt_recording(self):
         for boot, config in (("boot-b", "sim-a"), ("boot-a", "sim-b")):

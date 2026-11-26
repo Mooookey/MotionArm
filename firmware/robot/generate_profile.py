@@ -149,24 +149,47 @@ def generate_trial(profile):
     require(profile.get("full_workspace_verified") is False and profile.get("load_verified") is False and
             profile.get("thermal_safety_verified") is False, "unverified certification fields remain false")
     require(profile.get("onsite_confirmation_required") is True, "runtime confirmation gate")
-    require(profile.get("gripper_limit_ms") == 5000, "5000ms non-renewable deadline")
+    require(integer(profile.get("gripper_limit_ms"), "gripper_limit_ms") == 5000, "5000ms non-renewable deadline")
     require(profile.get("tick_nominal_us") == CALIBRATOR_TICK_US, "historical nominal timebase")
     require(profile.get("base_mapping") == [[-45, 1010], [0, 1610], [45, 2000]], "piecewise base anchors")
     require(profile.get("shoulder_mapping") == [[0, 1630], [45, 1030]], "upright shoulder anchor")
     require(profile.get("elbow_mapping") == [[0, 1570], [45, 1050]], "upright elbow anchor")
     require(profile.get("startup_deg") == [0, 45, 45], "startup angles")
-    require(profile.get("operating_limits_deg") == [[-3, 3], [42, 48], [42, 48]], "approved trial limits")
-    require(profile.get("speed_deg_s") == 2 and profile.get("acceleration_deg_s2") == 5 and
-            profile.get("gripper_rate_s") == 1, "approved trial rates")
-    require(profile.get("gripper_open_us") == 1130 and profile.get("gripper_close_us") == 1630, "gripper ratio anchors")
+    limits = profile.get("operating_limits_deg")
+    require(limits == [[-45, 45], [20, 60], [20, 60]], "approved observation trial limits")
+    signs = profile.get("joint_signs")
+    require(signs == [-1, -1] and all(type(v) is int for v in signs), "powered base/pitch signs -1/-1")
+    require(profile.get("mapping_version") == "coordinated-angle-v4", "explicit powered mapping version")
+    diagnostics = profile.get("diagnostic_offsets_deg")
+    require(diagnostics == [[-15, -10, -5, 0, 5, 10, 15], [-10, -5, 0, 5, 10], [-10, -5, 0, 5, 10]],
+            "approved discrete diagnostic offsets (expanded range is follow-only)")
+    for group in (*limits, *diagnostics, *profile["base_mapping"], *profile["shoulder_mapping"], *profile["elbow_mapping"], profile["startup_deg"]):
+        for value in group:
+            number(value, "finite numeric trial bounds / diagnostic offsets")
+    require(number(profile.get("deadzone_deg"), "deadzone_deg") == 5, "unchanged 5 degree deadzone")
+    require(number(profile.get("speed_deg_s"), "speed_deg_s") == 15 and
+            number(profile.get("acceleration_deg_s2"), "acceleration_deg_s2") == 30 and
+            number(profile.get("gripper_rate_s"), "gripper_rate_s") == 1, "approved trial rates")
+    require(integer(profile.get("gripper_open_us"), "gripper_open_us") == 1130 and
+            integer(profile.get("gripper_close_us"), "gripper_close_us") == 1630, "gripper ratio anchors")
     canonical = json.dumps(profile, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     identity = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    cpp = lambda values: "{" + ",".join(literal(v) for v in values) + "}"
+    low, high = ([row[i] for row in limits] for i in (0, 1))
+    diagnostic_rows = ",".join(cpp(row + [0] * (7-len(row))) for row in diagnostics)
+    counts = [len(row) for row in diagnostics]
     return ('#pragma once\n#include "PoweredOutput.h"\n'
             '// Generated scoped trial; full travel, load and thermal safety remain unverified.\n'
             'inline constexpr robot::TrialProfile kPoweredTrialProfile{\n'
             f'  "{identity}",\n'
-            '  {-3,42,42}, {3,48,48}, {0,45,45}, 2,5,1,\n'
-            '  {1010,1610,2000}, {1630,1030}, {1570,1050}, 1130,1630,4.88f\n};\n'), identity
+            f'  {cpp(low)}, {cpp(high)}, {cpp(profile["startup_deg"])}, '
+            f'{literal(profile["speed_deg_s"])},{literal(profile["acceleration_deg_s2"])},{literal(profile["gripper_rate_s"])},\n'
+            f'  {cpp([v[1] for v in profile["base_mapping"]])}, '
+            f'{cpp([v[1] for v in profile["shoulder_mapping"]])}, '
+            f'{cpp([v[1] for v in profile["elbow_mapping"]])}, '
+            f'{profile["gripper_open_us"]},{profile["gripper_close_us"]},{literal(profile["tick_nominal_us"])},\n'
+            f'  {literal(profile["deadzone_deg"])}, {{{diagnostic_rows}}}, {cpp(counts)},\n'
+            f'  {cpp(signs)}, "{profile["mapping_version"]}"\n}};\n'), identity
 
 
 def unique_fields(pairs):

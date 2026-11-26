@@ -19,11 +19,12 @@ export interface SimulationConfig {
 }
 export type Quaternion = [number, number, number, number]
 export type Vector3 = [number, number, number]
+export type MappingVersion = 'coordinated-angle-v3' | 'coordinated-angle-v4'
 export interface Mounting {
   profile: 'hand_back_x_right_y_forearm_z_down'
   label: string
   control_from_sensor: { Roll: '-Y'; Pitch: '+X'; Z: '+Z' }
-  joint_signs: [1, -1]
+  joint_signs: [1 | -1, -1]
 }
 export interface ModelConfig {
   config: SimulationConfig
@@ -32,6 +33,17 @@ export interface ModelConfig {
   baseline_id: string
   mounting: Mounting
   warning: string | null
+  profile_hash?: string | null
+  mapping_version?: MappingVersion
+  joint_signs?: [1 | -1, -1]
+  diagnostic_offsets_deg?: number[][] | null
+  trial_profile?: {
+    operating_limits_deg: number[][]; deadzone_deg: number
+    speed_deg_s: number; acceleration_deg_s2: number
+    diagnostic_offsets_deg: number[][]
+    joint_signs: [number, number]; mapping_version: MappingVersion
+    [key: string]: unknown
+  } | null
 }
 export interface ImuState {
   quaternion: Quaternion | null
@@ -44,7 +56,8 @@ export interface ImuState {
 }
 export interface ButtonState { a: boolean; b: boolean; ac: number | null; bc: number | null }
 export interface FollowState {
-  version: 'coordinated-angle-v3'
+  version: MappingVersion
+  joint_signs?: [1 | -1, -1]
   reference_quaternion: Quaternion | null
   delta_rotation_vector_deg: Vector3 | null
   deadzone_deg: number
@@ -89,7 +102,9 @@ export interface Telemetry {
   buttons: ButtonState
   control: {
     state: string; owner: string; enabled: boolean; armed: boolean
-    can_enable: boolean; reason: string | null; fault: string | null
+    can_enable: boolean; observation_ready?: boolean
+    direct_observation?: { note: string; unaccepted_axes: string[] } | null
+    reason: string | null; fault: string | null
     blockers: string[]; gate_status: string
     mapping: string
     limit_policy: string

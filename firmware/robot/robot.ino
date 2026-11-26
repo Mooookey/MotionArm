@@ -280,7 +280,8 @@ void dispatch(const cJSON *root, uint32_t now) {
     } else if(!output.enabled())error="PWM_HOLD_REQUIRED";
     else if(!strcmp(kind,"test_joint")) {
       uint32_t axis;const auto *offset=field(root,"offset_deg");
-      if(!integer(root,"axis",axis)||!cJSON_IsNumber(offset)||!controller.testJoint(axis,offset->valuedouble,now))error="DIAGNOSTIC_REJECTED";
+      if(!integer(root,"axis",axis)||!cJSON_IsNumber(offset)||!isfinite(offset->valuedouble)||
+          floor(offset->valuedouble)!=offset->valuedouble||!controller.testJoint(axis,float(offset->valuedouble),now))error="DIAGNOSTIC_REJECTED";
     } else {
       if(controller.enabled||controller.diagnosticActive||controller.openOut<1)error="STOP_AND_OPEN_FIRST";
       else if(!controller.initialize(now))error="INPUT_NOT_STABLE";
@@ -365,7 +366,7 @@ void setup() {
 #endif
   Serial.setTxBufferSize(4096); Serial.begin(MOTIONARM_POWERED_TRIAL ? 230400 : 115200); newId(bootId, 'r');
 #if MOTIONARM_POWERED_TRIAL
-  controller.configureTrial();
+  controller.configureTrial(kPoweredTrialProfile);
 #endif
   Wire.begin(21, 22, 100000); Wire.setTimeOut(4);
   pcaReady = initializeLockedPca() && lockedPcaReadable();

@@ -164,4 +164,5 @@ main{max-width:1800px;margin:0 auto;padding:27px 27px 0}.page-heading{display:fl
 @media (min-width: 651px) and (max-width: 960px) {
   .output-panel .gripper-protection { grid-row: 3; grid-column: 1 / 3; }
   .output-panel .control-state { grid-row: 3; grid-column: 3; }
+  .output-panel .direct-observation-group { grid-row: 7; grid-column: 1 / -1; }
 }
